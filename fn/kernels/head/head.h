@@ -1,4 +1,5 @@
 #pragma once
+#include "../../model/draft_fmt.h"
 
 // The output end of the target pass on one card of the two-card split (V1): the vocabulary logits (FC-HEAD2) and greedy
 // selection with T-GREEDY (FC-DEC1). The HC head mixer before them (FC-HEAD1) is a mode of HC2's kernels (hc.h:
@@ -122,13 +123,21 @@ size_t greedy_work_bytes();
 // packed for logits; false on a bad input.
 bool draft_ids(const int32_t * subset, int32_t n, int32_t card, int32_t * ids);
 // TTTS2: q8, the rows are Q8_0 (UD-Q4_K_XL's output.weight) instead of Q5_K.
+// IQ3S: draft_fmt also covers Q6_K (the IQ3_S / GSQ-RCO output.weight).
 int64_t draft_head_bytes(int32_t m, bool q8 = false);
+int64_t draft_head_bytes(int32_t m, draft_fmt f);
 bool    pack_draft_head(const uint8_t * vocab,
                         size_t          row_bytes,
                         const int32_t * ids,
                         int32_t         m,
                         uint8_t *       dst,
                         bool            q8 = false);
+bool    pack_draft_head(const uint8_t * vocab,
+                        size_t          row_bytes,
+                        const int32_t * ids,
+                        int32_t         m,
+                        uint8_t *       dst,
+                        draft_fmt       f);
 
 // Enqueue on stream (a cudaStream_t). False, with nothing enqueued, for a row count, size or pointer the contract
 // rejects; false after a failed launch submission (the CUDA error is left for the caller).

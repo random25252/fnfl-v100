@@ -260,16 +260,30 @@ bool draft_ids(const int32_t * subset, int32_t n, int32_t card, int32_t * ids) {
 }
 
 int64_t draft_head_bytes(int32_t m, bool q8) {
+    return draft_head_bytes(m, q8 ? draft_fmt::q8_0 : draft_fmt::q5_k);
+}
+
+int64_t draft_head_bytes(int32_t m, draft_fmt f) {
     if (m < 0) {
         return 0;
     }
-    return fn::dense::row_bytes(q8 ? fn::dense::fmt::q8_0 : fn::dense::fmt::q5_k, k_in) * m;
+    const fn::dense::fmt ff = f == draft_fmt::q8_0 ? fn::dense::fmt::q8_0
+                            : f == draft_fmt::q6_k ? fn::dense::fmt::q6_k
+                                                   : fn::dense::fmt::q5_k;
+    return fn::dense::row_bytes(ff, k_in) * m;
 }
 
 // one 8-row tile at a time: the tile's rows gathered contiguously, then dense::pack's layout of those 8 rows (pack
 // lays out each 8-row tile on its own, so packing tile by tile equals packing the gathered m rows at once)
 bool pack_draft_head(const uint8_t * vocab, size_t row_bytes, const int32_t * ids, int32_t m, uint8_t * dst, bool q8) {
-    const fn::dense::fmt f  = q8 ? fn::dense::fmt::q8_0 : fn::dense::fmt::q5_k;
+    return pack_draft_head(vocab, row_bytes, ids, m, dst, q8 ? draft_fmt::q8_0 : draft_fmt::q5_k);
+}
+
+bool pack_draft_head(const uint8_t * vocab, size_t row_bytes, const int32_t * ids, int32_t m, uint8_t * dst,
+                     draft_fmt fsel) {
+    const fn::dense::fmt f  = fsel == draft_fmt::q8_0 ? fn::dense::fmt::q8_0
+                            : fsel == draft_fmt::q6_k ? fn::dense::fmt::q6_k
+                                                      : fn::dense::fmt::q5_k;
     const size_t         rb = static_cast<size_t>(fn::dense::row_bytes(f, k_in));
     if (vocab == nullptr || ids == nullptr || dst == nullptr || m < 8 || m % 8 != 0 || m > n_vocab_card ||
         row_bytes < rb) {
