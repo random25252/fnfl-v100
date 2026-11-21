@@ -2597,6 +2597,33 @@ bool prompt_path::layer_half(const prompt_chunk & c,
                                                                               rt.counters + 2, s)))) {
                     return fail(err, "prompt: experts gate/up");
                 }
+                // DEBUG(IQ3S): FNFL_DBG_GLU_DUMP=<layer> (with FNFL_HC_DUMP_DIR): that layer's routed gate/up input x
+                // (F16 [n][2560]), routing ids ([n][10]) and GLU output (F16 [n x 10][320]) of this card, to files
+                if (const char * gl = std::getenv("FNFL_DBG_GLU_DUMP"), *gd = std::getenv("FNFL_HC_DUMP_DIR");
+                    gl != nullptr && gd != nullptr && std::atoi(gl) == l && c.index == 0) {
+                    std::vector<uint16_t> hx(size_t(n) * D), hg(size_t(n) * NU * 320);
+                    std::vector<int32_t>  hi(size_t(n) * NU);
+                    if (!cuda_ok(cudaStreamSynchronize(s), "dbg glu", err) ||
+                        !cuda_ok(cudaMemcpy(hx.data(), gu.x, hx.size() * 2, cudaMemcpyDeviceToHost), "dbg x", err) ||
+                        !cuda_ok(cudaMemcpy(hi.data(), ids, hi.size() * 4, cudaMemcpyDeviceToHost), "dbg ids", err) ||
+                        !cuda_ok(cudaMemcpy(hg.data(), glu, hg.size() * 2, cudaMemcpyDeviceToHost), "dbg glu", err)) {
+                        return false;
+                    }
+                    const std::string base = std::string(gd) + "/glu-L" + std::to_string(l) + "-k" + std::to_string(k) +
+                                             "-h" + std::to_string(h) + "-n" + std::to_string(n);
+                    const auto wr = [&](const std::string & path, const void * d, size_t bytes) {
+                        FILE * f = fopen(path.c_str(), "wb");
+                        const bool ok = f != nullptr && fwrite(d, 1, bytes, f) == bytes;
+                        if (f != nullptr) {
+                            fclose(f);
+                        }
+                        return ok;
+                    };
+                    if (!wr(base + "-x.f16", hx.data(), hx.size() * 2) || !wr(base + "-ids.i32", hi.data(), hi.size() * 4) ||
+                        !wr(base + "-glu.f16", hg.data(), hg.size() * 2)) {
+                        return fail(err, "prompt: dbg glu dump " + base);
+                    }
+                }
                 // DEBUG(IQ3S): FNFL_DBG_ZERO_EXPERTS=<layer>: that layer's routed experts' GLU zeroed (their down adds 0)
                 if (const char * zl = std::getenv("FNFL_DBG_ZERO_EXPERTS"); zl != nullptr && std::atoi(zl) == l &&
                     !cuda_ok(cudaMemsetAsync(glu, 0, size_t(n) * NU * 320 * 2 * sizeof(uint16_t), s), "dbg zero", err)) {

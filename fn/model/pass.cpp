@@ -12,6 +12,7 @@
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -367,6 +368,31 @@ bool head_part(pass_card & p, int32_t rows, int32_t part, const use_counters & u
         // SM1: the decision's start in context (stamp_logits), only with a sampler, so TG1's graphs are unchanged
         ok = fn::head::logits(rows, la, p.c.stream) &&
              (o.sampling == nullptr || fn::round::stamp_logits(p.rstate, p.c.stream));
+        // DEBUG(IQ3S): FNFL_DBG_HEAD_DUMP=<dir>: the first head of each card: X-HMIX's F32 rows and the logits
+        if (const char * hd = std::getenv("FNFL_DBG_HEAD_DUMP"); ok && hd != nullptr) {
+            static int            dumped[2] = { 0, 0 };
+            cudaStreamCaptureStatus cs        = cudaStreamCaptureStatusNone;
+            cudaStreamIsCapturing(static_cast<cudaStream_t>(p.c.stream), &cs);
+            if (cs == cudaStreamCaptureStatusNone && dumped[r] < 16) {
+                const int idx = dumped[r]++;
+                std::vector<float> hx(size_t(rows) * 2560), lg(size_t(rows) * fn::head::n_vocab_card);
+                ok = cudaStreamSynchronize(static_cast<cudaStream_t>(p.c.stream)) == cudaSuccess &&
+                     cudaMemcpy(hx.data(), la.hmix, hx.size() * 4, cudaMemcpyDeviceToHost) == cudaSuccess &&
+                     cudaMemcpy(lg.data(), p.logits, lg.size() * 4, cudaMemcpyDeviceToHost) == cudaSuccess;
+                const std::string b = std::string(hd) + "/head-k" + std::to_string(r) + "-i" + std::to_string(idx) +
+                                      "-rows" + std::to_string(rows);
+                FILE * f = fopen((b + "-x.f32").c_str(), "wb");
+                if (f != nullptr) {
+                    fwrite(hx.data(), 4, hx.size(), f);
+                    fclose(f);
+                }
+                f = fopen((b + "-logits.f32").c_str(), "wb");
+                if (f != nullptr) {
+                    fwrite(lg.data(), 4, lg.size(), f);
+                    fclose(f);
+                }
+            }
+        }
     } else if (part < 3 + static_cast<int32_t>(dp.size())) {
         ok = decision_part_enqueue(p, rows, p.logits, dp[size_t(part - 3)], o);
     } else {
