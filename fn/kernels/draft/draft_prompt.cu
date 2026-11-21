@@ -163,13 +163,7 @@ bool dcp_norm(const norm_args & a, void * stream) {
         return false;
     }
     norm_kernel<<<dim3(a.rows, 5), nt, 0, static_cast<cudaStream_t>(stream)>>>(a);
-    {
-        const cudaError_t e = cudaPeekAtLastError();
-        if (e != cudaSuccess) {
-            std::fprintf(::stderr, "FND norm err=%s rows=%d nt=%d\n", cudaGetErrorString(e), a.rows, nt);
-        }
-        return e == cudaSuccess;
-    }
+    return cudaPeekAtLastError() == cudaSuccess;
 }
 
 bool dcp_mixed(int32_t       rows,

@@ -331,7 +331,8 @@ std::vector<buffer_class> state_classes(const state_params & p) {
               both("DA-TC partials", (int64_t) fn::draft::part_bytes()),
               both("draft logits", int64_t(fn::samp::max_drafts) * fn::head::n_draft_card * 4),
               both("draft head work", std::max<int64_t>(256, (int64_t) fn::head::logits_work_bytes(
-                                                                 fn::head::n_draft_card, p.head_fmt == fn::head::draft_fmt::q8_0))) }
+                                                                 fn::head::n_draft_card, p.head_fmt == fn::head::draft_fmt::q8_0,
+                                                                 p.head_fmt == fn::head::draft_fmt::q6_k))) }
         });
     }
     // SM1: the sampler's per-slot state (samp.h): the options and decision record, the bias table and penalty counts

@@ -251,7 +251,6 @@ bool ep_gate_up_ladder(fmt                     f,
                        const int32_t *         tasks,
                        const int32_t *         count,
                        void *                  stream) {
-    std::fprintf(::stderr, "FND ep_gate_up_ladder: f=%d t=%d rows=%d takes=%d\n", int(f), t, rows, int(el_takes_gate_up(f)));
     if (!el_takes_gate_up(f) || t < 0 || t >= el_n_tiles || rows < 1 || rows > ep_max_rows || !al16(a.w) ||
         !al16(a.x) || !route_ok(a.route) || !al4(a.glu) || (a.glu_f32 != nullptr && !al16(a.glu_f32)) ||
         a.wt != nullptr || a.task_off != nullptr || !al16(tasks) || !al4(count) || stream == nullptr) {

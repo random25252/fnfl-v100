@@ -1747,8 +1747,6 @@ bool gate_up_body(fmt f, dfmt fg, dfmt fu, int32_t rows, const gate_up_args & a,
 // (SP2). SP4 H2 (map 2): the IQ2 body at B = 4 and 5 with the compact optional-row loop; the IQ3 and Q8_0 formats keep
 // SP2's kernels under map 2. XB3 C1 (map 3): the IQ2 formats as map 2, the IQ3 formats' B = 4 and 5 on the IQ3 body.
 template <fmt F> bool gate_up_deployed(dfmt fg, dfmt fu, int32_t rows, const gate_up_args & a, cudaStream_t st) {
-    std::fprintf(::stderr, "FNDIAG deployed ENTER F=%d fg=%d fu=%d rows=%d map=%d iq2=%d\n", int32_t(F), int32_t(fg),
-                 int32_t(fu), rows, a.map, int(is_iq2(F)));
     // SP4 (map 1): B = 4 and 5 of the target formats on the paired 320-thread kernel, the IQ2 formats in its IQ2 body.
     // IQ3S: IQ4_XS is out of it: gate_up_kernel_p's static_assert takes only the IQ2 body and the two IQ3 formats.
     if constexpr (F != fmt::q8_0 && F != fmt::iq4_xs) {
@@ -1825,8 +1823,6 @@ template <fmt F> bool gate_up_deployed(dfmt fg, dfmt fu, int32_t rows, const gat
         }
     } else {
         if constexpr (F == fmt::iq3_xxs || F == fmt::iq3_s) {
-            std::fprintf(::stderr, "FNDIAG iq3 branch: rows=%d map=%d cond=%d\n", rows, a.map,
-                         int(rows >= 4 && a.map == 3));
             if (rows >= 4 && a.map == 3) { // XB3 C1: the IQ3 body, the triple in its arguments
                 bool deployed = false;
 #define FN_EXPERTS_GU_CASE(rf, sgf, suf, layer)                                                                        \
@@ -1843,22 +1839,16 @@ template <fmt F> bool gate_up_deployed(dfmt fg, dfmt fu, int32_t rows, const gat
                 return rows == 4 ? launch_gate_up_u<4, gu_iq3>(u, st) : launch_gate_up_u<5, gu_iq3>(u, st);
             }
         }
-        bool any_match = false;
 #define FN_EXPERTS_GU_CASE(rf, sgf, suf, layer)                                                                        \
     if constexpr (F == fmt::rf) {                                                                                      \
         if (fg == dfmt::sgf && fu == dfmt::suf) {                                                                      \
-            any_match = true;                                                                                          \
-            const bool r_ = gate_up_rows<fmt::rf, dfmt::sgf, dfmt::suf>(rows, a, st);                                  \
-            std::fprintf(::stderr, "FNDIAG tail: matched F=%d fg=%d fu=%d rows=%d -> %d\n", int32_t(F), int32_t(fg),   \
-                         int32_t(fu), rows, int(r_));                                                                  \
-            return r_;                                                                                                 \
+            return gate_up_rows<fmt::rf, dfmt::sgf, dfmt::suf>(rows, a, st);                                           \
         }                                                                                                              \
     }
         FN_EXPERTS_ALL_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
 #undef FN_EXPERTS_GU_CASE
-        std::fprintf(::stderr, "FNDIAG tail: NO MATCH F=%d fg=%d fu=%d rows=%d map=%d\n", int32_t(F), int32_t(fg),    \
+        std::fprintf(::stderr, "gate_up: no instance for F=%d fg=%d fu=%d rows=%d map=%d\n", int32_t(F), int32_t(fg),
                      int32_t(fu), rows, a.map);
-        (void)any_match;
         return false;
     }
 }

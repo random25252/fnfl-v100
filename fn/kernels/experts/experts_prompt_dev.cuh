@@ -385,10 +385,6 @@ template <fmt F> __device__ __forceinline__ gu_scale gu_scale_of(const gu_raw & 
         // standing for zero; h selects the sub-block
         const uint32_t ls = (r.b >> (6 * h)) & 0x3fu;
         s = h2_of(dh * static_cast<float>(int32_t(ls) - 32));
-        if (blockIdx.x == 0 && threadIdx.x < 4 && blockIdx.y == 0) {
-            const float sv = __half2float(__ushort_as_half(uint16_t(s & 0xffffu)));
-            printf("FND s: r.b=%08x h=%d ls=%u dh=%.6f s=%.6f\n", r.b, h, ls, dh, sv);
-        }
     } else {
         const uint32_t sc = F == fmt::iq2_xs ? r.b : (r.b >> 8);
         s = h2_of(dh * static_cast<float>(2u * ((sc >> (4 * h)) & 0xfu) + 1u) * 0.125f);

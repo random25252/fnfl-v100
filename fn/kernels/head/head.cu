@@ -206,7 +206,7 @@ fn::dense::product_args vocab_args(const logits_args & a) {
     fn::dense::product_args p;
     p.k = k_in;
     p.n_mats = 1;
-    p.mats[0].f      = a.q8 ? fn::dense::fmt::q8_0 : fn::dense::fmt::q5_k;
+    p.mats[0].f      = a.q8 ? fn::dense::fmt::q8_0 : a.q6k ? fn::dense::fmt::q6_k : fn::dense::fmt::q5_k;
     p.mats[0].m = a.n;
     p.mats[0].w = a.w;
     p.mats[0].out = a.logits;
@@ -219,7 +219,7 @@ fn::dense::product_args vocab_args(const logits_args & a) {
 
 bool logits_ok(const logits_args & a, const void * stream) {
     return stream != nullptr && a.n >= 8 && a.n % 8 == 0 && a.n <= n_vocab_card && aligned(a.hmix, 16) &&
-           a.err != nullptr && (a.card == 0 || a.card == 1) && aligned(a.w, 16) && aligned(a.logits, 16);
+           a.err != nullptr && !(a.q8 && a.q6k) && (a.card == 0 || a.card == 1) && aligned(a.w, 16) && aligned(a.logits, 16);
 }
 
 template <int B> bool launch_reduce(const reduce_args & a, cudaStream_t st) {
@@ -229,13 +229,14 @@ template <int B> bool launch_reduce(const reduce_args & a, cudaStream_t st) {
 
 } // namespace
 
-size_t logits_work_bytes(int32_t n, bool q8) {
+size_t logits_work_bytes(int32_t n, bool q8, bool q6k) {
     if (n < 8 || n % 8 != 0 || n > n_vocab_card) {
         return 0;
     }
     logits_args a = {};
     a.n = n;
     a.q8          = q8;
+    a.q6k         = q6k;
     return fn::dense::work_bytes(vocab_args(a));
 }
 

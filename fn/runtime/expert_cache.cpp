@@ -395,9 +395,6 @@ bool expert_cache::ffn_card(model::card_ctx & c, const model::layer_weights & w,
                             fn::experts::gate_up_args & ga, fn::experts::down_args & da, std::string & err) {
     const cache::device_guard keep;
     parts & p = *p_;
-    std::fprintf(::stderr, "FND ffn_card enter: layer=%d card=%d rows=%d nd=%d dev=%d capturing=%d loopfail=%d\n",
-                 w.layer, c.card, rows, p.dv.nd, int(c.device), int(stream_capturing(c.stream)),
-                 int(p.win.loop().failed()));
     if (p.dv.nd != 2 || c.card < 0 || c.card > 1 || c.device != p.dv.dev[c.card] || w.layer < 0 ||
         w.layer >= fn::n_layer || rows < 1 || rows > fn::experts::max_rows) {
         return fail(err, "a per-card cached window outside two devices, the cache's layers or rows");

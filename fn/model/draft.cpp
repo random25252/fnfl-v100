@@ -133,6 +133,7 @@ bool embed(pass_card & p, const int32_t * tok, int32_t rows, std::string & err) 
     a.hx = p.emb_hx;
     a.err = p.c.rings->err(p.c.card);
     a.q8    = p.embd_q8;
+    a.iq4xs = p.embd_iq4xs;
     return fn::embed::embed(rows, a, p.c.stream) ? true : fail(err, "draft embed");
 }
 
@@ -467,7 +468,8 @@ bool pick(pass_card & p, draft_card & d, int32_t j, bool decide, const use_count
                                                NV,
                                                lg,
                                                d.logits_work,
-                                               d.head_fmt == fn::head::draft_fmt::q8_0 };
+                                               d.head_fmt == fn::head::draft_fmt::q8_0,
+                                               d.head_fmt == fn::head::draft_fmt::q6_k };
             if (!fn::head::logits(1, la, p.c.stream) || !fn::samp::pick_stage(p.samp, io, 0, p.c.stream)) {
                 return fail(err, "draft logits / sampled pick select");
             }
@@ -488,7 +490,8 @@ bool pick(pass_card & p, draft_card & d, int32_t j, bool decide, const use_count
                                            NV,
                                            lg,
                                            d.logits_work,
-                                           d.head_fmt == fn::head::draft_fmt::q8_0 };
+                                           d.head_fmt == fn::head::draft_fmt::q8_0,
+                                           d.head_fmt == fn::head::draft_fmt::q6_k };
         fn::head::reduce_args ra = {lg, NV, 0, p.pair_own, rg.slot(1 - r, fn::xchg::msg::greedy, 0), p.greedy_work};
         ra.ids = d.head_ids;
         if (!fn::head::logits(1, la, p.c.stream) || !fn::head::greedy_reduce(1, ra, p.c.stream)) {
@@ -825,7 +828,8 @@ bool joint_pick(draft_joint & J, int32_t j, bool decide, int32_t rows, const use
                                                NV,
                                                d.logits,
                                                d.logits_work,
-                                               d.head_fmt == fn::head::draft_fmt::q8_0 };
+                                               d.head_fmt == fn::head::draft_fmt::q8_0,
+                                               d.head_fmt == fn::head::draft_fmt::q6_k };
             if (!fn::head::logits(J.lanes, la, p.c.stream)) {
                 return fail(err, "joint draft logits");
             }
@@ -840,7 +844,8 @@ bool joint_pick(draft_joint & J, int32_t j, bool decide, int32_t rows, const use
                                            NV,
                                            d.logits,
                                            d.logits_work,
-                                           d.head_fmt == fn::head::draft_fmt::q8_0 };
+                                           d.head_fmt == fn::head::draft_fmt::q8_0,
+                                           d.head_fmt == fn::head::draft_fmt::q6_k };
         fn::head::reduce_args ra = {d.logits,     NV, 0, p.pair_own, rg.slot(1 - r, fn::xchg::msg::greedy, 0),
                                     p.greedy_work};
         ra.ids = d.head_ids;
@@ -1370,7 +1375,8 @@ bool draft_init(model & m, const pass_card & p, draft_card & d, std::string & er
                                  : std::strcmp(m.tp(oi).format, "Q8_0") == 0 ? fn::head::draft_fmt::q8_0
                                  : std::strcmp(m.tp(oi).format, "Q6_K") == 0 ? fn::head::draft_fmt::q6_k
                                                                             : fn::head::draft_fmt::q5_k;  // TTTS2, IQ3S
-    d.logits_work    = fn::head::logits_work_bytes(NV, d.head_fmt == fn::head::draft_fmt::q8_0) > 0 ? work : nullptr;
+    d.logits_work    = fn::head::logits_work_bytes(NV, d.head_fmt == fn::head::draft_fmt::q8_0,
+                                                     d.head_fmt == fn::head::draft_fmt::q6_k) > 0 ? work : nullptr;
     if (!draft_index_init(m, card, d, err)) {
         return false;
     }

@@ -81,10 +81,13 @@ struct logits_args {
     // TTTS2: w holds Q8_0 rows (UD-Q4_K_XL's output.weight; dense::product's Q8_0 numerics and the same bound),
     // dense::pack'ed; false: Q5_K
     bool            q8 = false;
+    // IQ3S: w holds Q6_K rows (the Swift IQ3_S file's output.weight, and the draft head packed from it); exclusive
+    // with q8
+    bool            q6k = false;
 };
 
 // bytes of the product's work buffer for n rows (0 when the product is unsplit, as at n = 124,160); q8 as logits_args
-size_t logits_work_bytes(int32_t n, bool q8 = false);
+size_t logits_work_bytes(int32_t n, bool q8 = false, bool q6k = false);
 
 struct reduce_args {
     const float * logits; // [B][n]

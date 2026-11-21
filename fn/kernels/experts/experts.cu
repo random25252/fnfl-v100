@@ -1301,8 +1301,6 @@ bool gate_up(fmt f, fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const ga
                      int32_t(fg), int32_t(fu), rows, in.map, stream);
         return false;
     }
-    std::fprintf(::stderr, "FNDIAG gate_up: f=%d fg=%d fu=%d rows=%d map=%d\n", int32_t(f), int32_t(fg), int32_t(fu), rows,
-                 a.map);
     const cudaStream_t st = static_cast<cudaStream_t>(stream);
     switch (f) {
         case fmt::iq2_xxs:
