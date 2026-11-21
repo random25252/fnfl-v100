@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdio>
 #include <cstring>
 #include <type_traits>
 
@@ -790,11 +789,10 @@ struct gu_entry {
 };
 constexpr gu_entry gu_table[] = {
 #define FN_EXPERTS_GU_ENTRY(rf, sgf, suf, layer) {fmt::rf, fn::dense::fmt::sgf, fn::dense::fmt::suf, layer},
-    FN_EXPERTS_ALL_GATE_UP_INSTANCES(FN_EXPERTS_GU_ENTRY)
+    FN_EXPERTS_GATE_UP_INSTANCES(FN_EXPERTS_GU_ENTRY)
 #undef FN_EXPERTS_GU_ENTRY
 };
-static_assert(sizeof(gu_table) / sizeof(gu_table[0]) == n_gate_up_inst + n_iq3s_gate_up_inst,
-              "the gate/up instance count: the deployed and IQ3_S lists");
+static_assert(sizeof(gu_table) / sizeof(gu_table[0]) == n_gate_up_inst, "the gate/up instance count");
 
 struct dn_entry {
     fmt f, fs;
@@ -802,11 +800,10 @@ struct dn_entry {
 };
 constexpr dn_entry dn_table[] = {
 #define FN_EXPERTS_DN_ENTRY(rf, sf, layer) {fmt::rf, fmt::sf, layer},
-    FN_EXPERTS_ALL_DOWN_INSTANCES(FN_EXPERTS_DN_ENTRY)
+    FN_EXPERTS_DOWN_INSTANCES(FN_EXPERTS_DN_ENTRY)
 #undef FN_EXPERTS_DN_ENTRY
 };
-static_assert(sizeof(dn_table) / sizeof(dn_table[0]) == n_down_inst + n_iq3s_down_inst,
-              "the down instance count: the deployed and IQ3_S lists");
+static_assert(sizeof(dn_table) / sizeof(dn_table[0]) == n_down_inst, "the down instance count");
 
 // ME1: the Q4 candidate's lists
 constexpr gu_entry q4_gu_table[] = {
@@ -1052,42 +1049,10 @@ bool pack_gate_up(fmt f, const uint8_t * gate, const uint8_t * up, size_t row_by
                         }
                         break;
                     }
-                    case fmt::iq4_xs: {
-                        // IQ3S: block_iq4_xs = d(f16) | scales_h(u16) | scales_l[4] | qs[128], 136 bytes a 256.
-                        // Sub-block j (8 x 32 weights) is qs[16 j .. 16 j + 15]: 16 bytes written whole to chunk j.
-                        // Chunk 0 (the d chunk) carries the 8 scale bytes take8 splits into x|y (low nibble of the
-                        // scale) and z|w (its high 2 bits at 2 bits a sub-block): scale = (sl & 0xf) | ((sh >> 2*(j&1)) & 3) << 4
-                        // where sub = j >> 1, so byte sub of both halves, two sub-blocks a byte.
-                        // IQ3S: two regions in the file's 136 bytes a row. Data: sub-block ib's 16 qs bytes at chunk ib,
-                        // record srec = sbk * 64 + r. Side: 8 bytes a record at d_off, d (FP16) at +0 and the sub-block's
-                        // ls = sl | sh << 4 (6 bits) at +2, written once per record by sub-block 0.
-                        {
-                            const int32_t srec = sbk * 64 + r;
-                            put(tile + (int64_t(ib) * gu_threads + srec) * 16, blk + 8 + 16 * ib, 16);
-                            if (ib == 0) {
-                                // the record's 8 sub-block scales packed 6 bits each into 6 bytes (48 bits), plus d
-                                uint8_t side[8];
-                                side[0] = blk[0];
-                                side[1] = blk[1];
-                                uint64_t packed_ls = 0;
-                                for (int32_t k = 0; k < 8; ++k) {
-                                    const uint8_t sl = (blk[4 + (k >> 1)] >> (4 * (k & 1))) & 0xf;
-                                    const uint8_t sh = (blk[2 + (k >> 2)] >> (2 * (k & 3))) & 0x3;
-                                    const uint64_t ls = uint64_t(sl | (sh << 4)) & 0x3fu;
-                                    packed_ls |= ls << (6 * k);
-                                }
-                                put(tile + d_off(f) + int64_t(srec) * 8, side, 2);           // d
-                                put(tile + d_off(f) + int64_t(srec) * 8 + 2, reinterpret_cast<const uint8_t *>(&packed_ls), 6);
-                            }
-                        }
-                        break;
-                    }
                     default:
                         return false;
                 }
-                // IQ3S: iq4_xs writes its own d plane (the block's FP16 d beside each record's scale pair), the
-                // loop above already placed it, so the shared tail must not touch it
-                if (ib == 0 && f != fmt::q8_0 && f != fmt::q2_0 && f != fmt::iq4_xs) {
+                if (ib == 0 && f != fmt::q8_0 && f != fmt::q2_0) {
                     put(tile + d_off(f) + (sbk * 8 + rs) * 16 + 2 * mrow, blk, 2); // d
                 }
             }
@@ -1297,8 +1262,6 @@ bool gate_up_lanes(fmt                        f,
 bool gate_up(fmt f, fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const gate_up_args & in, void * stream) {
     gate_up_args a;
     if (!gate_up_prepared(in, rows, a) || stream == nullptr) {
-        std::fprintf(::stderr, "FNDIAG gate_up: prepared failed f=%d fg=%d fu=%d rows=%d map=%d stream=%p\n", int32_t(f),
-                     int32_t(fg), int32_t(fu), rows, in.map, stream);
         return false;
     }
     const cudaStream_t st = static_cast<cudaStream_t>(stream);
@@ -1321,8 +1284,6 @@ bool gate_up(fmt f, fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const ga
             return detail::gate_up_q4_k(fg, fu, rows, a, st);
         case fmt::q5_k:
             return detail::gate_up_q5_k(fg, fu, rows, a, st);
-        case fmt::iq4_xs:  // IQ3S: the IQ3_S file's layer 47 routed gate/up
-            return detail::gate_up_iq4_xs(fg, fu, rows, a, st);
         default:
             return false;
     }
@@ -1419,7 +1380,7 @@ bool down(fmt f, fmt fs, int32_t rows, const down_args & a, void * stream) {
     if (f == fmt::rf && fs == fmt::sf) {                                                                               \
         return down_rows<fmt::rf, fmt::sf>(rows, a, st);                                                               \
     }
-    FN_EXPERTS_ALL_DOWN_INSTANCES(FN_EXPERTS_DN_CASE)
+    FN_EXPERTS_DOWN_INSTANCES(FN_EXPERTS_DN_CASE)
     FN_EXPERTS_Q4_DOWN_INSTANCES(FN_EXPERTS_DN_CASE) // ME1: the Q4 candidate's (Q8_0's entry is the deployed one's)
     FN_EXPERTS_DRAFT_Q2_DOWN_INSTANCES(FN_EXPERTS_DN_CASE) // ME7: the Q2 draft's
 #undef FN_EXPERTS_DN_CASE
@@ -1536,7 +1497,7 @@ bool down_lanes_send(fmt                     f,
             return down_lanes_of<fmt::rf, fmt::sf>(lanes, rows, k, st); \
         }                                                               \
     }
-    FN_EXPERTS_ALL_DOWN_INSTANCES(FN_EXPERTS_DN_CASE)
+    FN_EXPERTS_DOWN_INSTANCES(FN_EXPERTS_DN_CASE)
     FN_EXPERTS_Q4_DOWN_INSTANCES(FN_EXPERTS_DN_CASE)  // TTTS3 item 4: Q5_1 (Q8_0's entry is the deployed one's)
 #undef FN_EXPERTS_DN_CASE
     return false;

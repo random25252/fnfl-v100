@@ -156,7 +156,6 @@ bool ex1_fmt(const char * name, experts::fmt & f) {
         {"IQ3_XXS", experts::fmt::iq3_xxs}, {"IQ3_S", experts::fmt::iq3_s},   {"Q2_0", experts::fmt::q2_0},
         {"IQ4_NL", experts::fmt::iq4_nl},   {"Q8_0", experts::fmt::q8_0},     {"Q4_K", experts::fmt::q4_k},
         {"Q5_K", experts::fmt::q5_k},       {"Q5_1", experts::fmt::q5_1}, // ME1: the Q4 candidate's routed formats
-        {"IQ4_XS", experts::fmt::iq4_xs},                                  // IQ3S: the IQ3_S file's layer 47
     };
     for (const auto & e : table) {
         if (std::strcmp(e.first, name) == 0) {
@@ -518,13 +517,6 @@ bool plan_regions(model::model & m, std::string & err) {
             }
             if ((rg.lay == layout::ex1_gate || rg.lay == layout::ex1_down) && rg.bytes > 0 &&
                 rg.bytes != fn::n_expert * per_expert(m, rg)) {
-                fprintf(stderr, "IQ3S-DIAG %s: region=%lld per_expert=%lld want=%lld fmt=%s lay=%d\n"
-                                "   gate_up_bytes(iq4_xs)=%lld gate_up_bytes(iq3_xxs)=%lld\n",
-                        m.tp(rg.members[0]).name, (long long)rg.bytes,
-                        (long long)per_expert(m, rg), (long long)(fn::n_expert * per_expert(m, rg)),
-                        m.tp(rg.members[0]).format, (int)rg.lay,
-                        (long long)experts::gate_up_bytes(experts::fmt::iq4_xs),
-                        (long long)experts::gate_up_bytes(experts::fmt::iq3_xxs));
                 err = std::string(m.tp(rg.members[0]).name) + ": the EX1 region is not 512 packed experts";
                 return false;
             }

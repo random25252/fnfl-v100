@@ -428,18 +428,16 @@
         body(integral_constant<dfmt, dfmt::g>{}, integral_constant<dfmt, dfmt::u>{});                                  \
         break;
             switch (a.u_fg * 16 + a.u_fu) {
-                FN_GU_PAIR(iq4_xs, q4_k)
-                FN_GU_PAIR(q4_k, q6_k)
-                FN_GU_PAIR(q6_k, q5_k)
-                FN_GU_PAIR(iq4_xs, q6_k)
-                FN_GU_PAIR(q6_k, q4_k)
-                FN_GU_PAIR(q4_k, iq4_xs)
+                FN_GU_PAIR(iq4_xs, iq3_s)
                 FN_GU_PAIR(q4_k, q4_k)
-                FN_GU_PAIR(q6_k, iq4_xs)
-                FN_GU_PAIR(q6_k, q6_k)
-                FN_GU_PAIR(q5_k, q5_k)
-                FN_GU_PAIR(iq4_xs, q5_k)
+                FN_GU_PAIR(iq4_xs, q6_k)
+                FN_GU_PAIR(iq3_s, iq4_xs)
+                FN_GU_PAIR(iq3_s, iq3_s)
+                FN_GU_PAIR(q4_k, iq3_s)
                 FN_GU_PAIR(q4_k, q5_k)
+                FN_GU_PAIR(q5_k, q4_k)
+                FN_GU_PAIR(iq4_xs, q4_k)
+                FN_GU_PAIR(iq4_xs, iq4_xs)
                 default:
                     break;
             }
@@ -474,18 +472,14 @@
             } else if constexpr (std::is_same_v<FAM, gu_iq3>) {
                 // XB3 C1: the eight pairs the IQ3 layers meet (the IQ bodies' lists stay written out, as with_pair's)
                 switch (a.u_fg * 16 + a.u_fu) {
-                    FN_GU_PAIR(q4_k, iq4_xs)
-                    FN_GU_PAIR(iq4_xs, iq4_xs)
-                    FN_GU_PAIR(q6_k, q6_k)
-                    FN_GU_PAIR(q4_k, q4_k)
-                    FN_GU_PAIR(iq4_xs, q4_k)
-                    FN_GU_PAIR(q5_k, q5_k)
-                    FN_GU_PAIR(q6_k, iq4_xs)
                     FN_GU_PAIR(iq4_xs, q6_k)
-                    FN_GU_PAIR(q5_k, iq4_xs)
-                    FN_GU_PAIR(iq4_xs, q5_k)
-                    FN_GU_PAIR(q6_k, q5_k)
-                    FN_GU_PAIR(q4_k, q6_k)
+                    FN_GU_PAIR(iq3_s, iq3_s)
+                    FN_GU_PAIR(q4_k, iq3_s)
+                    FN_GU_PAIR(iq3_s, q4_k)
+                    FN_GU_PAIR(q6_k, iq3_s)
+                    FN_GU_PAIR(iq4_xs, iq4_xs)
+                    FN_GU_PAIR(iq4_xs, q4_k)
+                    FN_GU_PAIR(q4_k, iq4_xs)
                     default:
                         break;
                 }

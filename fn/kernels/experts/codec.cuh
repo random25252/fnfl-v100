@@ -242,20 +242,15 @@ template <> struct gu_codec<fmt::iq2_xxs> {
     static constexpr int32_t block_bytes = 66, chunks = 4, grid_off = 17424, grid_len = 1024;
     static constexpr bool    aux8 = false, sc8 = false, kq = false;
     static constexpr int32_t NA = 0, CC = 1 + NA + chunks;
-    // IQ3S: the tile fits the file's 136 bytes a row exactly, in two regions. Data: the 8 chunks of 16 qs bytes a row
-    // (gu_threads * 128). Side: the last gu_threads * 8 bytes, 8 a record -- d (FP16) at +0, the sub-block scale
-    // ls = sl | sh << 4 (6 bits) at +2, five spare. No plane is added, so gate_up_bytes is the file's own row bytes.
-    static constexpr int64_t data_bytes = int64_t(chunks) * gu_threads * 16,
-                             T = int64_t(gu_threads) * block_bytes, aux8_off = data_bytes,
-                             sc8_off = data_bytes, d_off = data_bytes;
+    static constexpr int64_t T = int64_t(gu_threads) * block_bytes, aux8_off = int64_t(chunks) * gu_threads * 16,
+                             sc8_off = aux8_off, d_off = sc8_off;
     static constexpr bool    split = false, sgn = true, int_rows = false, code_sums = false, b4_two_copies = false;
     static constexpr int32_t max_b  = 5;
     static constexpr int32_t body_b = 1;  // the family body's smallest B (gate_up_kernel_u)
     using row                       = row_dec;
 
     static __device__ __forceinline__ int64_t chunk_off(int32_t q, int32_t rec, int32_t j, int32_t sb, int32_t rs) {
-        // IQ3S: q == 0 is the record's 8-byte side slot (d at +0, ls at +2); q >= 1 the data chunks
-        return q == 0 ? d_off + rec * 8 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
+        return q == 0 ? d_off + ((j >> 3) * 8 + rs) * 16 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
     }
 
     static __device__ __forceinline__ uint4
@@ -302,8 +297,7 @@ template <> struct gu_codec<fmt::iq2_xs> {
     using row                       = row_dec;
 
     static __device__ __forceinline__ int64_t chunk_off(int32_t q, int32_t rec, int32_t j, int32_t sb, int32_t rs) {
-        // IQ3S: q == 0 is the record's 8-byte side slot (d at +0, ls at +2); q >= 1 the data chunks
-        return q == 0 ? d_off + rec * 8 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
+        return q == 0 ? d_off + ((j >> 3) * 8 + rs) * 16 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
     }
 
     // the aux chunk is one 8-byte load (aux8 in x, y), every other chunk one 16-byte load
@@ -361,8 +355,7 @@ template <> struct gu_codec<fmt::iq2_s> {
     using row                       = row_dec;
 
     static __device__ __forceinline__ int64_t chunk_off(int32_t q, int32_t rec, int32_t j, int32_t sb, int32_t rs) {
-        // IQ3S: q == 0 is the record's 8-byte side slot (d at +0, ls at +2); q >= 1 the data chunks
-        return q == 0 ? d_off + rec * 8 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
+        return q == 0 ? d_off + ((j >> 3) * 8 + rs) * 16 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
     }
 
     static __device__ __forceinline__ uint4
@@ -401,74 +394,6 @@ template <> struct gu_codec<fmt::iq2_s> {
     }
 };
 
-// IQ3S: IQ4_XS as an expert format (the IQ3_S file's layer 47 routed gate/up).
-// block_iq4_xs = qs[128] | scales_l[16] | scales_h[4] | d(f16), 136 bytes per 256 weights.
-// Sub-block ib (0..7) covers 32 weights: qs[16 ib + t] low nibble -> weight 32 ib + t,
-// high nibble -> weight 32 ib + 16 + t. Scale ls = (scales_l[ib/2] >> 4*(ib%2) & 0xf)
-// | ((scales_h >> 2*ib) & 3) << 4, value = d * (ls - 32) * kvalues_iq4nl[nibble].
-template <> struct gu_codec<fmt::iq4_xs> {
-    static constexpr fmt     f           = fmt::iq4_xs;
-    static constexpr int32_t block_bytes = 136, chunks = 8, grid_off = 17408, grid_len = 16;
-    static constexpr bool    aux8 = false, sc8 = false, kq = false;
-    static constexpr int32_t NA = 0, CC = 1 + NA + chunks;
-    static constexpr int64_t T = int64_t(gu_threads) * block_bytes, aux8_off = int64_t(chunks) * gu_threads * 16,
-                             sc8_off = aux8_off, d_off = sc8_off;
-    static constexpr bool    split = true, sgn = false, int_rows = false, code_sums = false, b4_two_copies = false;
-    static constexpr int32_t max_b  = 5;
-    static constexpr int32_t body_b = 0;  // IQ3S: no family body (no lanes); the per-triple kernels run it
-    using row                       = row_dec;
-
-    static __device__ __forceinline__ int64_t chunk_off(int32_t q, int32_t rec, int32_t j, int32_t sb, int32_t rs) {
-        // IQ3S: q == 0 is the record's 8-byte side slot (d at +0, ls at +2); q >= 1 the data chunks
-        return q == 0 ? d_off + rec * 8 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
-    }
-
-    static __device__ __forceinline__ uint4
-    load(const uint8_t * tl, int32_t q, uint32_t z, int32_t rec, int32_t j, int32_t sb, int32_t rs) {
-        return __ldcs(reinterpret_cast<const uint4 *>(tl + chunk_off(q, rec, j, sb, rs) + z));
-    }
-
-    template <typename O>
-    static __device__ __forceinline__ void take(int32_t       q,
-                                                const uint4 & v,
-                                                float (&dh8)[8],
-                                                float (&mn8)[8],
-                                                bytes8 &         ax8,
-                                                bytes8 &         sc8b,
-                                                uint4 &          held,
-                                                row_dec &        rd,
-                                                const uint32_t * grid,
-                                                int32_t          j,
-                                                int32_t          rs,
-                                                O &&             out) {
-        const int32_t c = q - 1 - NA;
-        if (c == 0) {
-            ax8  = take8(v.x, v.y);   // sub-block scale low nibbles
-            sc8b = take8(v.z, v.w);   // sub-block scale high bits
-            return;
-        }
-        const int32_t  sub  = (c - 1) >> 1;
-        const int32_t  half = (c - 1) & 1;
-        const float    dh   = dh8[sub];
-        const uint32_t sl   = byte8(ax8, sub);
-        const uint32_t sh   = byte8(sc8b, sub);
-        const int32_t  ls   = int32_t(((half == 0 ? (sl & 0xfu) : (sl >> 4)) | (((sh >> (2 * half)) & 3) << 4)));
-        const float    dl   = dh * static_cast<float>(ls - 32);
-        const uint32_t a0 = v.x, a1 = v.y;
-        rd.g[0] = a0 & 0x0f0f0f0fu;
-        rd.g[1] = __byte_perm(a0, 0, 0x4440) & 0x0f0f0f0fu;
-        rd.g[2] = a1 & 0x0f0f0f0fu;
-        rd.g[3] = __byte_perm(a1, 0, 0x4440) & 0x0f0f0f0fu;
-        rd.g[4] = (a0 >> 4) & 0x0f0f0f0fu;
-        rd.g[5] = __byte_perm(a0 >> 4, 0, 0x4440) & 0x0f0f0f0fu;
-        rd.g[6] = (a1 >> 4) & 0x0f0f0f0fu;
-        rd.g[7] = __byte_perm(a1 >> 4, 0, 0x4440) & 0x0f0f0f0fu;
-        rd.dw0  = dl;
-        rd.dw1  = dl;
-        out(rd, rs + 8 * sub); // IQ3S: 8 rows a sub-block, as every other IQ format's mrow indexing
-    }
-};
-
 // IQ3_XXS: rows 4h .. 4h + 3 in three chunks: [q r0][sg r0][sg r1], [q r1][sg r2][sg r3], [q r2][q r3] (q 8 B, sg
 // 4 B), so each chunk completes a row and at most three sign words wait in registers
 template <> struct gu_codec<fmt::iq3_xxs> {
@@ -484,8 +409,7 @@ template <> struct gu_codec<fmt::iq3_xxs> {
     using row                       = row_dec;
 
     static __device__ __forceinline__ int64_t chunk_off(int32_t q, int32_t rec, int32_t j, int32_t sb, int32_t rs) {
-        // IQ3S: q == 0 is the record's 8-byte side slot (d at +0, ls at +2); q >= 1 the data chunks
-        return q == 0 ? d_off + rec * 8 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
+        return q == 0 ? d_off + (sb * 8 + rs) * 16 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
     }
 
     static __device__ __forceinline__ uint4
@@ -542,8 +466,7 @@ template <> struct gu_codec<fmt::iq3_s> {
     using row                       = row_dec;
 
     static __device__ __forceinline__ int64_t chunk_off(int32_t q, int32_t rec, int32_t j, int32_t sb, int32_t rs) {
-        // IQ3S: q == 0 is the record's 8-byte side slot (d at +0, ls at +2); q >= 1 the data chunks
-        return q == 0 ? d_off + rec * 8 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
+        return q == 0 ? d_off + (sb * 8 + rs) * 16 : (int64_t(q - 1 - NA) * gu_threads + rec) * 16;
     }
 
     // the aux chunk is two 8-byte loads (aux8 in x, y and sc8 in z, w), every other chunk one 16-byte load
@@ -905,7 +828,6 @@ __host__ __device__ constexpr gu_layout gu_layout_of(fmt f) {
            f == fmt::iq3_xxs ? gu_layout_c<fmt::iq3_xxs>() :
            f == fmt::iq3_s   ? gu_layout_c<fmt::iq3_s>() :
            f == fmt::q8_0    ? gu_layout_c<fmt::q8_0>() :
-           f == fmt::iq4_xs  ? gu_layout_c<fmt::iq4_xs>() :  // IQ3S: block 136, 8 chunks, kvalues grid 17408/16
                                gu_layout{ 0, 0, false, false, 0, 0 };
 }
 
@@ -960,15 +882,10 @@ template <fmt F> constexpr bool gu_codec_ok() {
            C::CC == 1 + C::NA + C::chunks;
 }
 
-static_assert(gu_codec_ok<fmt::iq2_xs>(),  "iq2_xs offsets");
-static_assert(gu_codec_ok<fmt::iq2_s>(),   "iq2_s offsets");
-static_assert(gu_codec_ok<fmt::iq3_xxs>(), "iq3_xxs offsets");
-static_assert(gu_codec_ok<fmt::iq3_s>(),   "iq3_s offsets");
-static_assert(gu_codec_ok<fmt::q8_0>(),    "q8_0 offsets");
-static_assert(gu_codec_ok<fmt::q2_0>(),    "q2_0 offsets");
-static_assert(gu_codec_ok<fmt::q4_k>(),    "q4_k offsets");
-static_assert(gu_codec_ok<fmt::q5_k>(),    "q5_k offsets");
-static_assert(gu_codec_ok<fmt::iq4_xs>(),  "iq4_xs offsets");
+static_assert(gu_codec_ok<fmt::iq2_xxs>() && gu_codec_ok<fmt::iq2_xs>() && gu_codec_ok<fmt::iq2_s>() &&
+                  gu_codec_ok<fmt::iq3_xxs>() && gu_codec_ok<fmt::iq3_s>() && gu_codec_ok<fmt::q8_0>() &&
+                  gu_codec_ok<fmt::q2_0>() && gu_codec_ok<fmt::q4_k>() && gu_codec_ok<fmt::q5_k>(),
+              "the codecs' offsets are the layout's");
 static_assert(d_off(fmt::iq2_xxs) + 10 * 8 * 16 == tile_bytes(fmt::iq2_xxs), "IQ2_XXS tile bytes");
 static_assert(d_off(fmt::iq2_xs) + 10 * 8 * 16 == tile_bytes(fmt::iq2_xs), "IQ2_XS tile bytes");
 static_assert(d_off(fmt::iq2_s) + 10 * 8 * 16 == tile_bytes(fmt::iq2_s), "IQ2_S tile bytes");
@@ -1002,8 +919,6 @@ constexpr int32_t gu_body_b(fmt f) {
             return gu_codec<fmt::q4_k>::body_b;
         case fmt::q5_k:
             return gu_codec<fmt::q5_k>::body_b;
-        case fmt::iq4_xs: // IQ3S: the IQ3_S file's layer 47 (a family of one, so no lanes)
-            return gu_codec<fmt::iq4_xs>::body_b;
         default:
             return 0;
     }

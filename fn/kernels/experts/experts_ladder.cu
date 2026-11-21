@@ -1,7 +1,6 @@
 // APF2: the ladder's grouped experts (experts_ladder.h). Built with relocatable device code (the launcher's device
 // launch), in its own library, so experts_prompt.cu's per-task kernels keep their code.
 
-#include <cstdio>
 #include "fn/kernels/experts/experts_ladder.h"
 #include "fn/kernels/experts/experts_prompt_dev.cuh"
 #include "fn/kernels/tc/tc_ladder.cuh"

@@ -228,7 +228,6 @@ bool gate_up_iq3_s(fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const gat
 bool gate_up_q8_0(fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const gate_up_args & a, cudaStream_t st);
 bool gate_up_q2_0(fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const gate_up_args & a, cudaStream_t st);
 bool gate_up_q4_k(fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const gate_up_args & a, cudaStream_t st);
-bool gate_up_iq4_xs(fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const gate_up_args & a, cudaStream_t st);
 bool gate_up_q5_k(fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const gate_up_args & a, cudaStream_t st);
 // ME10: the pair launches (gate_up_pair) of the IQ2 and IQ3 bodies at B = 4 and 5; the caller checked the arguments
 bool gate_up_pair_iq2(fmt f, fn::dense::fmt fg, fn::dense::fmt fu, int32_t rows, const gate_up_pair_args & a,

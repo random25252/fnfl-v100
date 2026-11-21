@@ -66,7 +66,6 @@ constexpr layout layout_of(fmt f) {
            : f == fmt::iq3_s   ? layout{110, 6, true, true}
            : f == fmt::q4_k    ? layout{148, 8, false, false}
            : f == fmt::q5_k    ? layout{180, 10, false, false}
-           : f == fmt::iq4_xs  ? layout{136, 8, false, false} // IQ3S
                                : layout{0, 0, false, false};
 }
 constexpr bool is_kq(fmt f) {
@@ -94,11 +93,6 @@ static_assert(d_off(fmt::iq3_s) + 10 * 8 * 16 == tile_bytes(fmt::iq3_s), "IQ3_S 
 static_assert(d_off(fmt::iq2_s) + 10 * 8 * 16 == tile_bytes(fmt::iq2_s), "IQ2_S tile");
 static_assert(dmin_off(fmt::q4_k) + 10 * 8 * 16 == tile_bytes(fmt::q4_k), "Q4_K tile");
 static_assert(dmin_off(fmt::q5_k) + 10 * 8 * 16 == tile_bytes(fmt::q5_k), "Q5_K tile");
-// IQ3S: 8 data chunks fill gu_threads * 128 = 81920; the tile is 87040, so the d plane is its last 5120 bytes: one
-// record's two scale bytes (low nibbles at +ib, the high 2 bits at +8+ib) at rec * 8.
-static_assert(tile_bytes(fmt::iq4_xs) == gu_threads * 136, "IQ4_XS tile");
-static_assert(d_off(fmt::iq4_xs) == gu_threads * 128, "IQ4_XS d plane start");
-static_assert(tile_bytes(fmt::iq4_xs) - d_off(fmt::iq4_xs) == gu_threads * 8, "IQ4_XS d plane size");
 
 // GGUF bytes a 256-weight block (the K-quants' are 4 fewer than their packed blocks: the scales stay packed)
 constexpr int32_t gguf_block(fmt f) {
@@ -116,7 +110,7 @@ inline void cp(uint8_t * dst, const uint8_t * src, size_t n) {
 template <fmt F> void unpack_tile(const uint8_t * tile, uint8_t * dst) {
     constexpr int32_t bb = gguf_block(F);
     constexpr int64_t rb = int64_t(10) * bb;
-    if constexpr (is_kq(F) || F == fmt::iq4_xs) {
+    if constexpr (is_kq(F)) {
         std::memset(dst, 0, size_t(64 * rb)); // the scale bytes and nibbles are set field by field
     }
     for (int32_t rec = 0; rec < gu_threads; ++rec) {
@@ -151,17 +145,7 @@ template <fmt F> void unpack_tile(const uint8_t * tile, uint8_t * dst) {
                         blk[2 + 64 + 8 + 32 + ib / 2] = tile[sc8_off(F) + ((j >> 1) * 8 + rs) * 8 + mrow];
                     }
                 }
-            } else if constexpr (F == fmt::iq4_xs) {
-                // IQ3S: record srec = sbk * 64 + r names the (row r, block sbk) pair; chunk ib is that pair's
-                // sub-block ib's 16 qs bytes, and the d plane's byte srec * 8 + ib is its ls = sl | sh << 4.
-                const int32_t srec = sbk * 64 + r;
-                cp(blk + 8 + 16 * ib, tile + (int64_t(ib) * gu_threads + srec) * 16, 16);
-                const uint8_t ls = tile[d_off(F) + srec * 8 + ib];
-                blk[4 + (ib >> 1)] = static_cast<uint8_t>(
-                    (blk[4 + (ib >> 1)] & ~(0xfu << (4 * (ib & 1)))) | ((ls & 0xfu) << (4 * (ib & 1))));
-                blk[2 + (ib >> 2)] = static_cast<uint8_t>(
-                    (blk[2 + (ib >> 2)] & ~(0x3u << (2 * (ib & 3)))) | (((ls >> 4) & 0x3u) << (2 * (ib & 3))));
-} else { // Q4_K, Q5_K
+            } else { // Q4_K, Q5_K
                 constexpr bool q5 = F == fmt::q5_k;
                 const int32_t chunk = q5 ? (mrow < 4 ? 1 + mrow : 2 + mrow) : mrow;
                 const uint8_t * pk = mc(chunk, 0);
@@ -291,8 +275,6 @@ void unpack_gate_up_tile(fmt f, const uint8_t * w, int32_t g, uint8_t * dst) {
             return unpack_tile<fmt::q4_k>(tile, dst);
         case fmt::q5_k:
             return unpack_tile<fmt::q5_k>(tile, dst);
-        case fmt::iq4_xs: // IQ3S
-            return unpack_tile<fmt::iq4_xs>(tile, dst);
         default:
             return;
     }

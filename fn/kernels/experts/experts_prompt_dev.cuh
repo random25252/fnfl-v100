@@ -103,7 +103,6 @@ __host__ __device__ constexpr grid_spec grid_of(fmt f) {
            : f == fmt::iq2_s   ? grid_spec{1024, 8, 8, grid_off_iq2s}
            : f == fmt::iq3_xxs ? grid_spec{256, 4, 32, grid_off_iq3xxs}
            : f == fmt::iq3_s   ? grid_spec{512, 4, 32, grid_off_iq3s}
-           : f == fmt::iq4_xs  ? grid_spec{16, 4, 32, kvalues_off}  // IQ3S: kvalues_iq4nl, 16 x 4 bytes a copy
                                : grid_spec{0, 0, 0, 0};
 }
 __host__ __device__ constexpr int32_t table_bytes(fmt f) {
@@ -234,11 +233,6 @@ template <fmt F> __device__ __forceinline__ gu_col gu_col_of(int32_t rs, int32_t
         const int32_t sc = 3 * h + (i4 < 2 ? 0 : 1), sb = (i4 & 1) ? 12 : 8;
         c.o_a = qc * nt_threads * 16 + rec16 + qb; // q: 8 bytes
         c.o_b = sc * nt_threads * 16 + rec16 + sb; // signs: 4 bytes
-    } else if constexpr (F == fmt::iq4_xs) {
-        // IQ3S: 8 data chunks of 16 bytes = a block's 128 qs bytes; collector m of 8 reads its 4 bytes at chunk m >> 1
-        // (high half when m & 1), and the block's scale pair (sl, sh) from chunk 0's record
-        c.o_a = (1 + (m >> 1)) * nt_threads * 16 + rec16 + 8 * (m & 1); // q: 4 bytes
-        c.o_b = rec16;                                                  // chunk 0: sl at + 0, sh at + 8
     } else if constexpr (F == fmt::iq2_xxs || F == fmt::iq2_xs) {
         c.o_a = (m >> 1) * nt_threads * 16 + rec16 + 8 * (m & 1); // 8 bytes
     } else {
@@ -274,16 +268,6 @@ template <fmt F> __device__ __forceinline__ gu_raw gu_load(const uint8_t * w, co
         r.b = 0;
     } else if constexpr (F == fmt::iq2_xs) {
         r.b = __ldg(w + (o.w + j * 64));
-    } else if constexpr (F == fmt::iq4_xs) {
-        // IQ3S: d from this record's side slot, the packed scales (8 x 6 bits) from its +2
-        uint16_t dh;
-        __builtin_memcpy(&dh, w + o.z, 2);
-        r.d = dh;
-        uint32_t ls48 = 0;
-        for (int32_t k = 0; k < 4; ++k) {
-            ls48 |= uint32_t(__ldg(w + o.z + 2 + k)) << (8 * k);
-        }
-        r.b = ls48;
     } else {
         r.b = __ldg(w + (o.y + j * 128)) | (static_cast<uint32_t>(__ldg(w + (o.y + j * 128 + 8))) << 8);
     }
@@ -303,10 +287,6 @@ template <fmt F> __device__ __forceinline__ int4 gu_offsets(const gu_col & c, in
     if constexpr (is_kq(F)) {
         // ME1: x the main chunk, y the qh word, z d (dmin kq_dmin after it), w the scale and min bytes
         return make_int4(to + c.o_a, to + c.o_b, to + kq_d_off(F) + c.rs * 16 + 2 * c.m, to + c.o_c);
-    }
-    if constexpr (F == fmt::iq4_xs) {
-        // IQ3S: the record's own 8-byte side slot: d (FP16) at +0, the packed sub-block scales at +2
-        return make_int4(to + c.o_a, to + c.o_b, to + d_off(F) + c.rs * 8, to + c.o_c);
     }
     return make_int4(to + c.o_a, to + c.o_b, to + d_off(F) + c.rs * 16 + 2 * c.m, to + c.o_c);
 }
@@ -379,12 +359,6 @@ template <fmt F> __device__ __forceinline__ gu_scale gu_scale_of(const gu_raw & 
         s = h2_of(dh * static_cast<float>(1u + 2u * (r.d >> 24)));
     } else if constexpr (F == fmt::iq2_xxs) {
         s = h2_of(dh * static_cast<float>((r.q.y >> 27) | 1u) * 0.125f);
-    } else if constexpr (F == fmt::iq4_xs) {
-        // IQ3S: ls = sl | sh << 4 for the sub-block, and the dequant is d * (ls - 32) with no halving
-        // IQ3S: the record's 8 sub-block ls values are 6 bits each in r.b (ls = sl | sh << 4, 0..63), the range 32
-        // standing for zero; h selects the sub-block
-        const uint32_t ls = (r.b >> (6 * h)) & 0x3fu;
-        s = h2_of(dh * static_cast<float>(int32_t(ls) - 32));
     } else {
         const uint32_t sc = F == fmt::iq2_xs ? r.b : (r.b >> 8);
         s = h2_of(dh * static_cast<float>(2u * ((sc >> (4 * h)) & 0xfu) + 1u) * 0.125f);
@@ -398,14 +372,13 @@ __device__ __forceinline__ gu_scale kq_scale(const kq_raw & r) {
     return {h2_of(d * static_cast<float>(r.s & 0xffu)), h2_of(-(dm * static_cast<float>(r.s >> 8)))};
 }
 __host__ __device__ constexpr int32_t task_rows_of(fmt f) {
-    // IQ3S: IQ4_XS groups like the other 256-weight IQ superblocks (the IQ3_S file's layer 47)
     return f == fmt::iq3_xxs || f == fmt::iq2_xxs || f == fmt::iq2_xs || f == fmt::iq2_s || f == fmt::iq3_s ||
-                   f == fmt::iq4_xs || is_kq(f)
+                   is_kq(f)
                ? 40
                : 0;
 }
 __host__ __device__ constexpr bool two_scales(fmt f) {
-    return f == fmt::iq2_xs || f == fmt::iq2_s || f == fmt::iq4_xs; // IQ3S: two chunks a sub-block
+    return f == fmt::iq2_xs || f == fmt::iq2_s;
 }
 
 // Chunk l of the column's sub-block: weights 8 l .. 8 l + 7 as the B fragments of two k4 products, FP16 code x scale
@@ -418,22 +391,7 @@ __device__ __forceinline__ uint4 gu_chunk(const gu_raw & r, const gu_scale & p, 
     const auto hw = [&](uint32_t g, uint32_t sel, uint32_t s2, uint32_t c2) {
         return hfma2(__byte_perm(g, c64, sel), s2, c2);
     };
-    if constexpr (F == fmt::iq4_xs) {
-        // IQ3S: one sub-block is 32 weights = 4 chunks of 8 (l = 0..3). Its 16 qs bytes come as r.q.x (bytes 0..7) and
-        // r.q.y (bytes 8..15); chunk l takes 4 of a word's bytes, low nibbles when l is even and high when odd, exactly
-        // as gu_codec<fmt::iq4_xs>::take builds rd.g[l]. Each nibble is kvalues_iq4nl[n], a 4-byte entry at n * 4 in
-        // the 16-entry shared table; each index's stride is rep * eb = 128 bytes, so the offset is nibble << 7. Each
-        // entry is one byte (kvalues_iq4nl), the 4 bytes at tb + idx being the copy's replicated nibble values.
-        const uint32_t qw = l < 2 ? r.q.x : r.q.y;
-        const uint32_t n4 = ((l & 1) == 0 ? qw : (qw >> 4)) & 0x0f0f0f0fu;
-        const uint32_t n0 = n4 & 0xfu, n1 = (n4 >> 8) & 0xfu, n2 = (n4 >> 16) & 0xfu, n3 = (n4 >> 24) & 0xfu;
-        const uint32_t g0 = *reinterpret_cast<const uint32_t *>(tb + (n0 << 7) + lo);
-        const uint32_t g1 = *reinterpret_cast<const uint32_t *>(tb + (n2 << 7) + lo);
-        const uint32_t g2 = *reinterpret_cast<const uint32_t *>(tb + (n1 << 7) + lo);
-        const uint32_t g3 = *reinterpret_cast<const uint32_t *>(tb + (n3 << 7) + lo);
-        return make_uint4(hw(g0, 0x4140, p.s, p.c), hw(g1, 0x4342, p.s, p.c), hw(g2, 0x4140, p.s, p.c),
-                          hw(g3, 0x4342, p.s, p.c));
-    } else if constexpr (F == fmt::iq3_xxs || F == fmt::iq3_s) {
+    if constexpr (F == fmt::iq3_xxs || F == fmt::iq3_s) {
         const uint32_t qw = l < 2 ? r.q.x : r.q.y;
         uint32_t s8, i0, i1;
         if constexpr (F == fmt::iq3_xxs) {

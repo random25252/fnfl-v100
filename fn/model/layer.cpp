@@ -113,8 +113,7 @@ constexpr struct {
     { "Q8_0",    fn::experts::fmt::q8_0    },
     { "Q4_K",    fn::experts::fmt::q4_k    },
     { "Q5_K",    fn::experts::fmt::q5_k    }, // TTTS2: UD-Q4_K_XL
-    { "Q5_1",    fn::experts::fmt::q5_1    },
-    { "IQ4_XS",  fn::experts::fmt::iq4_xs  } // IQ3S: the file's layer 47 routed gate/up
+    { "Q5_1",    fn::experts::fmt::q5_1    }
 };
 
 bool expert_fmt(const char * f, int32_t & out) {

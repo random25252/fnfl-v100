@@ -303,7 +303,6 @@ add_library(fnfl-kernels-experts STATIC
     kernels/experts/experts_gu_q8_0.cu
     kernels/experts/experts_gu_q2_0.cu
     kernels/experts/experts_gu_q4_k.cu
-    kernels/experts/experts_gu_iq4_xs.cu
     kernels/experts/experts_gu_q5_k.cu
     kernels/experts/experts_gu_body_q4_k.cu
     kernels/experts/experts_gu_body_q5_k.cu

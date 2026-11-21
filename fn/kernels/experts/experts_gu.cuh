@@ -12,7 +12,6 @@
 #include "fn/xchg/xchg.cuh"
 
 #include <atomic>
-#include <cstdio>
 #include <type_traits>
 
 namespace fn::experts {
@@ -500,24 +499,17 @@ static_assert(gu_iq2::table == gu_u_table && gu_iq3::table == gu_u3_table && gu_
               "the IQ bodies' table regions and B");
 // the IQ bodies' pair switches (experts_gu_u_body.inc) list exactly their profiles' pairs, in order
 static_assert(pairs_are(gu_iq2::pairs,
-                         {
-                            pair_key(dfmt::iq4_xs, dfmt::iq3_s), pair_key(dfmt::q4_k, dfmt::q4_k), pair_key(dfmt::iq4_xs, dfmt::q6_k),
-                            pair_key(dfmt::iq3_s, dfmt::iq4_xs), pair_key(dfmt::iq3_s, dfmt::iq3_s), pair_key(dfmt::q4_k, dfmt::iq3_s),
-                            pair_key(dfmt::q4_k, dfmt::q5_k), pair_key(dfmt::q5_k, dfmt::q4_k), pair_key(dfmt::iq4_xs, dfmt::q4_k),
-                            pair_key(dfmt::iq4_xs, dfmt::iq4_xs), pair_key(dfmt::q4_k, dfmt::q6_k), pair_key(dfmt::q6_k, dfmt::q5_k),
-                            pair_key(dfmt::q6_k, dfmt::q4_k), pair_key(dfmt::q4_k, dfmt::iq4_xs), pair_key(dfmt::q6_k, dfmt::iq4_xs),
-                            pair_key(dfmt::q6_k, dfmt::q6_k), pair_key(dfmt::q5_k, dfmt::q5_k), pair_key(dfmt::iq4_xs, dfmt::q5_k),
-                         }),
+                        { pair_key(dfmt::iq4_xs, dfmt::iq3_s), pair_key(dfmt::q4_k, dfmt::q4_k),
+                          pair_key(dfmt::iq4_xs, dfmt::q6_k), pair_key(dfmt::iq3_s, dfmt::iq4_xs),
+                          pair_key(dfmt::iq3_s, dfmt::iq3_s), pair_key(dfmt::q4_k, dfmt::iq3_s),
+                          pair_key(dfmt::q4_k, dfmt::q5_k), pair_key(dfmt::q5_k, dfmt::q4_k),
+                          pair_key(dfmt::iq4_xs, dfmt::q4_k), pair_key(dfmt::iq4_xs, dfmt::iq4_xs) }),
               "the IQ2 body's pairs");
 static_assert(pairs_are(gu_iq3::pairs,
-                         {
-                            pair_key(dfmt::iq4_xs, dfmt::q6_k), pair_key(dfmt::iq3_s, dfmt::iq3_s), pair_key(dfmt::q4_k, dfmt::iq3_s),
-                            pair_key(dfmt::iq3_s, dfmt::q4_k), pair_key(dfmt::q6_k, dfmt::iq3_s), pair_key(dfmt::iq4_xs, dfmt::iq4_xs),
-                            pair_key(dfmt::iq4_xs, dfmt::q4_k), pair_key(dfmt::q4_k, dfmt::iq4_xs), pair_key(dfmt::q6_k, dfmt::q6_k),
-                            pair_key(dfmt::q4_k, dfmt::q4_k), pair_key(dfmt::q5_k, dfmt::q5_k), pair_key(dfmt::q6_k, dfmt::iq4_xs),
-                            pair_key(dfmt::q5_k, dfmt::iq4_xs), pair_key(dfmt::iq4_xs, dfmt::q5_k), pair_key(dfmt::q6_k, dfmt::q5_k),
-                            pair_key(dfmt::q4_k, dfmt::q6_k),
-                         }),
+                        { pair_key(dfmt::iq4_xs, dfmt::q6_k), pair_key(dfmt::iq3_s, dfmt::iq3_s),
+                          pair_key(dfmt::q4_k, dfmt::iq3_s), pair_key(dfmt::iq3_s, dfmt::q4_k),
+                          pair_key(dfmt::q6_k, dfmt::iq3_s), pair_key(dfmt::iq4_xs, dfmt::iq4_xs),
+                          pair_key(dfmt::iq4_xs, dfmt::q4_k), pair_key(dfmt::q4_k, dfmt::iq4_xs) }),
               "the IQ3 body's pairs");
 
 // the family's shared pair for key (gate x 16 + up): body(gate, up) as integral constants, one block-uniform switch
@@ -1566,17 +1558,10 @@ template <bool X, fmt F, dfmt FG, dfmt FU, int B> bool launch_gate_up_x(const ga
     static std::atomic<uint32_t> attr_done{0u};
     if (!detail::smem_attr_once(attr_done, reinterpret_cast<const void *>(gate_up_kernel<X, F, FG, FU, B, gu_depth>),
                                 smem)) {
-        std::fprintf(::stderr, "FNDIAG launch_gate_up_x: smem_attr_once failed F=%d FG=%d FU=%d B=%d smem=%d\n",
-                     int32_t(F), int32_t(FG), int32_t(FU), B, smem);
         return false;
     }
     gate_up_kernel<X, F, FG, FU, B, gu_depth><<<n_sm, gu_threads, smem, st>>>(a);
-    const cudaError_t e = cudaPeekAtLastError();
-    if (e != cudaSuccess) {
-        std::fprintf(::stderr, "FNDIAG launch_gate_up_x: launch err %s F=%d FG=%d FU=%d B=%d smem=%d threads=%d sm=%d\n",
-                     cudaGetErrorString(e), int32_t(F), int32_t(FG), int32_t(FU), B, smem, gu_threads, n_sm);
-    }
-    return e == cudaSuccess;
+    return cudaPeekAtLastError() == cudaSuccess;
 }
 
 // ME3: as launch_gate_up_p
@@ -1747,14 +1732,13 @@ bool gate_up_body(fmt f, dfmt fg, dfmt fu, int32_t rows, const gate_up_args & a,
 // (SP2). SP4 H2 (map 2): the IQ2 body at B = 4 and 5 with the compact optional-row loop; the IQ3 and Q8_0 formats keep
 // SP2's kernels under map 2. XB3 C1 (map 3): the IQ2 formats as map 2, the IQ3 formats' B = 4 and 5 on the IQ3 body.
 template <fmt F> bool gate_up_deployed(dfmt fg, dfmt fu, int32_t rows, const gate_up_args & a, cudaStream_t st) {
-    // SP4 (map 1): B = 4 and 5 of the target formats on the paired 320-thread kernel, the IQ2 formats in its IQ2 body.
-    // IQ3S: IQ4_XS is out of it: gate_up_kernel_p's static_assert takes only the IQ2 body and the two IQ3 formats.
-    if constexpr (F != fmt::q8_0 && F != fmt::iq4_xs) {
+    // SP4 (map 1): B = 4 and 5 of the target formats on the paired 320-thread kernel, the IQ2 formats in its IQ2 body
+    if constexpr (F != fmt::q8_0) {
         if (rows >= 4 && a.map == 1) {
             bool deployed = false;
 #define FN_EXPERTS_GU_CASE(rf, sgf, suf, layer)                                                                        \
     deployed = deployed || (F == fmt::rf && fg == dfmt::sgf && fu == dfmt::suf);
-            FN_EXPERTS_ALL_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
+            FN_EXPERTS_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
 #undef FN_EXPERTS_GU_CASE
             if (!deployed) {
                 return false;
@@ -1776,7 +1760,7 @@ template <fmt F> bool gate_up_deployed(dfmt fg, dfmt fu, int32_t rows, const gat
                              : launch_gate_up_p<false, fmt::rf, dfmt::sgf, dfmt::suf, 5>(a, st);                       \
         }                                                                                                              \
     }
-                FN_EXPERTS_ALL_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
+                FN_EXPERTS_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
 #undef FN_EXPERTS_GU_CASE
                 return false;
             }
@@ -1791,14 +1775,14 @@ template <fmt F> bool gate_up_deployed(dfmt fg, dfmt fu, int32_t rows, const gat
                              : launch_gate_up<fmt::rf, dfmt::sgf, dfmt::suf, 5>(a, st);                                \
         }                                                                                                              \
     }
-            FN_EXPERTS_ALL_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
+            FN_EXPERTS_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
 #undef FN_EXPERTS_GU_CASE
             return false;
         }
         bool deployed = false;
 #define FN_EXPERTS_GU_CASE(rf, sgf, suf, layer)                                                                        \
     deployed = deployed || (F == fmt::rf && fg == dfmt::sgf && fu == dfmt::suf);
-        FN_EXPERTS_ALL_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
+        FN_EXPERTS_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
 #undef FN_EXPERTS_GU_CASE
         if (!deployed) {
             return false;
@@ -1827,7 +1811,7 @@ template <fmt F> bool gate_up_deployed(dfmt fg, dfmt fu, int32_t rows, const gat
                 bool deployed = false;
 #define FN_EXPERTS_GU_CASE(rf, sgf, suf, layer)                                                                        \
     deployed = deployed || (F == fmt::rf && fg == dfmt::sgf && fu == dfmt::suf);
-                FN_EXPERTS_ALL_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
+                FN_EXPERTS_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
 #undef FN_EXPERTS_GU_CASE
                 if (!deployed) {
                     return false;
@@ -1845,10 +1829,8 @@ template <fmt F> bool gate_up_deployed(dfmt fg, dfmt fu, int32_t rows, const gat
             return gate_up_rows<fmt::rf, dfmt::sgf, dfmt::suf>(rows, a, st);                                           \
         }                                                                                                              \
     }
-        FN_EXPERTS_ALL_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
+        FN_EXPERTS_GATE_UP_INSTANCES(FN_EXPERTS_GU_CASE)
 #undef FN_EXPERTS_GU_CASE
-        std::fprintf(::stderr, "gate_up: no instance for F=%d fg=%d fu=%d rows=%d map=%d\n", int32_t(F), int32_t(fg),
-                     int32_t(fu), rows, a.map);
         return false;
     }
 }
