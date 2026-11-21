@@ -2,6 +2,7 @@
 
 // fn/xchg device side: the A3 sends, polls and resets (the protocol and its four steps are in xchg.h).
 
+#include <cstdio>
 #include "fn/xchg/xchg.h"
 
 #include <cuda_fp16.h>
@@ -13,6 +14,9 @@ namespace fn::xchg {
 
 // polls of one spin-wait before it gives up and reports (at about 0.2-1 us a poll, 0.2-1 s)
 constexpr uint32_t poll_budget = 1u << 20;
+
+__device__ unsigned int fnd_poll_seen[1] = {0};
+__device__ unsigned int fnd_pm_seen[1] = {0};
 
 // The payload rule: every NaN is sent as the canonical NaN, so no payload word equals the sentinel.
 __device__ __forceinline__ uint32_t canonical(float v) {
@@ -75,6 +79,11 @@ __device__ __forceinline__ void poll(const uint4 * const (&p)[N], uint4 (&v)[N],
             return;
         }
         if (n >= poll_budget) {
+            // FND: every hit, not a one-shot (a one-shot can be consumed by a benign earlier poll)
+            if (threadIdx.x == 0) {
+                printf("FND poll TIMEOUT: N=%d pending=%08x iters=%u budget=%u code=%u block=%d\n", N, pending, n,
+                       poll_budget, code, int(blockIdx.x));
+            }
             atomicOr(err, code);
             return;
         }
@@ -119,6 +128,12 @@ __device__ __forceinline__ uint32_t poll_masked(const uint4 * const (&p)[N], uin
                 ((m & 4u) == 0u || v[i].z != sentinel) && ((m & 8u) == 0u || v[i].w != sentinel)) {
                 pending &= ~(1u << i);
             }
+        }
+    }
+    if (pending != 0u) {
+        if (threadIdx.x == 0) {
+            printf("FND poll_masked TIMEOUT: N=%d pending=%08x mask=%08x%08x%08x%08x budget=%u block=%d\n", N,
+                   pending, mask[0], mask[1], mask[2], mask[3], poll_budget, int(blockIdx.x));
         }
     }
     return pending;

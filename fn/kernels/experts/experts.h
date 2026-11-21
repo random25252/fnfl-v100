@@ -88,7 +88,7 @@
 namespace fn::experts {
 
 // q8_0: gate/up and down. ME1: q4_k, q5_k (gate/up) and q5_1 (down), the Unsloth Q4 candidate's routed formats
-enum class fmt : int32_t { iq2_xxs, iq2_xs, iq2_s, iq3_xxs, iq3_s, q2_0, iq4_nl, q8_0, q4_k, q5_k, q5_1 };
+enum class fmt : int32_t { iq2_xxs, iq2_xs, iq2_s, iq3_xxs, iq3_s, q2_0, iq4_nl, q8_0, q4_k, q5_k, q5_1, iq4_xs };
 
 constexpr int32_t n_ff_card = 320; // channels a card owns per expert
 constexpr int32_t max_rows = 5;     // SP2: the five-row verification pass
@@ -344,6 +344,9 @@ bool write_meta(int32_t rows, const int32_t * ids, const class_table & cw, uint8
 // The deployed instantiations (experts_inst.h), in that list's order; i out of range returns false
 constexpr int32_t n_gate_up_inst = 31;
 constexpr int32_t n_down_inst = 5;
+// IQ3S: the IQ3_S file's own instances (a second profile beside the deployed ones)
+constexpr int32_t n_iq3s_gate_up_inst = 32;
+constexpr int32_t n_iq3s_down_inst    = 4;
 bool gate_up_inst(int32_t i, fmt & f, fn::dense::fmt & fg, fn::dense::fmt & fu, int32_t & first_layer);
 bool down_inst(int32_t i, fmt & f, fmt & fs, int32_t & first_layer);
 // ME1: the Q4 candidate's instantiations (experts_inst.h FN_EXPERTS_Q4_*), not deployed: the tests' list

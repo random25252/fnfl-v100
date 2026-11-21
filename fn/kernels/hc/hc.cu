@@ -14,6 +14,11 @@
 namespace fn::hc {
 namespace {
 
+__device__ unsigned int fnd_land[1] = {0};
+
+__device__ unsigned int fnd_late[1] = {0};
+
+
 constexpr int32_t n_stream = 4;
 constexpr int32_t n_col = 5;         // hc_down: 256-feature columns of a stream's own half, one 16-byte load a lane
 constexpr int32_t n_oct = 5;         // hc_up: 64-wide octets of the low rank, eight lanes of 16 bytes
@@ -1977,6 +1982,13 @@ __device__ __forceinline__ void up_moments(const sub_joint_params & jp,
         const uint32_t m[4] = {t0.mask, t0.mask, t1.mask, t1.mask};
         uint4 v[4];
         const uint32_t late = fn::xchg::poll_masked<4>(p, v, m);
+        if (late != 0u) {
+            if (atomicCAS(reinterpret_cast<unsigned int *>(&fnd_late[0]), 0u, 1u) == 0u) {
+                printf("FND late: late=%u masks=%08x %08x peer0=%llx own0=%llx\n", late, t0.mask, t1.mask,
+                       (unsigned long long)__cvta_generic_to_global(t0.peer),
+                       (unsigned long long)__cvta_generic_to_global(t0.own));
+            }
+        }
         if ((late & 3u) != 0u) {
             atomicOr(t0.err, fn::xchg::err_poll_hc);
         }
@@ -2272,6 +2284,11 @@ template <int B, bool H> __device__ __forceinline__ void pair_common(const pair_
         uint4 w[2];
         fn::xchg::poll<2>(pw, w, err0, fn::xchg::err_poll_hc);
         if (!fn::xchg::landed(w[0]) || !fn::xchg::landed(w[1])) {
+            if (atomicCAS(reinterpret_cast<unsigned int *>(&fnd_land[0]), 0u, 1u) == 0u) {
+                printf("FND land: t=%d landed0=%d landed1=%d w0=(%08x %08x %08x %08x) c0=%llx c1=%llx\n", t,
+                       int(fn::xchg::landed(w[0])), int(fn::xchg::landed(w[1])), w[0].x, w[0].y, w[0].z, w[0].w,
+                       (unsigned long long)__cvta_generic_to_global(c0), (unsigned long long)__cvta_generic_to_global(c1));
+            }
             atomicOr(err1, fn::xchg::err_poll_hc);
         }
         const float4 v0 = as_f4(w[0]), v1 = as_f4(w[1]);

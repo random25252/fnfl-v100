@@ -616,7 +616,20 @@ fn::model::lad_cfg prompt_path::lad_route(const fn::model::lad_key & key, int32_
     }
     // the table is the UD-Q4_K_XL file's (prompt-tune's calibration): another file (IQ3_XXS) runs the retained routes
     // wherever its keys would match. The pick at the rung, the retained route where its split does not fit the
-    // workspace at these rows
+    // workspace at these rows.
+    // IQ3S: a routed expert format the ladder has no kernel for (IQ4_XS) must not take a retained route: the ladder's
+    // launches take Q4_K/Q5_K gate/up and Q5_1/Q8_0 down only, so the route would fail at every row (ep_gate_up_ladder
+    // refuses the format). The layer runs the regular expert path instead.
+    if (key.fam == fn::model::lad_fam::ex_gate_up || key.fam == fn::model::lad_fam::ex_down) {
+        // the ladder's expert launches take Q4_K/Q5_K gate/up and Q5_1/Q8_0 down (el_takes_gate_up / el_takes_down),
+        // by the key's GGUF format name
+        const std::string & fn_ = key.fmt;
+        const bool gate_up = key.fam == fn::model::lad_fam::ex_gate_up;
+        const bool takes   = gate_up ? (fn_ == "Q4_K" || fn_ == "Q5_K") : (fn_ == "Q5_1" || fn_ == "Q8_0");
+        if (!takes) {
+            return {};
+        }
+    }
     return lad_on_ ? fn::model::lad_lookup(key, rows, lad_model_of(key)) : fn::model::lad_cfg{};
 }
 
@@ -1593,6 +1606,8 @@ uint64_t prompt_path::unit_key(const prompt_chunk & c, int32_t l, int32_t sub, i
 bool prompt_path::unit_eager(const prompt_chunk & c, int32_t l, int32_t sub, int32_t j, std::string & err) {
     for (int32_t phase = 0; phase < 4; ++phase) {
         if (!layer_half(c, l, sub, j, phase, err)) {
+            std::fprintf(::stderr, "FND unit_eager: layer=%d sub=%d j=%d PHASE=%d failed err='%s'\n", l, sub, j, phase,
+                         err.c_str());
             return false;
         }
     }
@@ -1711,8 +1726,10 @@ bool prompt_path::unit_graph(const prompt_chunk & c, int32_t l, int32_t sub, int
             }
             (void) cudaGetLastError();
             fprintf(stderr,
-                    "prompt: layer %d sublayer %d piece %d: graph capture failed (%s%s%s); the unit runs eagerly\n", l,
-                    sub, j, cudaGetErrorString(ce), ok ? "" : "; ", ok ? "" : err.c_str());
+                    "prompt: layer %d sublayer %d piece %d: graph capture failed (%s%s%s) [FND: ok=%d ce=%d g=%p]"
+                    "; the unit runs eagerly\n",
+                    l, sub, j, cudaGetErrorString(ce), ok ? "" : "; ", ok ? "" : err.c_str(), int(ok), int(ce),
+                    static_cast<const void *>(g));
             restore();
             note(&route_counts::eager_units);
             return unit_eager(c, l, sub, j, err);
@@ -1968,6 +1985,19 @@ bool prompt_path::layer_half(const prompt_chunk & c,
             return false;
         }
         float * S   = a.S + int64_t(r0) * 4 * D;
+        { // FND: S as HC receives it
+            static int fnd_once = 0;
+            if (fnd_once++ == 0) {
+                int32_t nbad = 0, firstz = -1;
+                const int64_t tot = int64_t(n) * 4 * fn::n_embd;
+                for (int64_t z = 0; z < tot; ++z) {
+                    const float q = S[z];
+                    if (!(q == q) || fabsf(q) > 1e30f) { if (nbad == 0) firstz = int(z); ++nbad; }
+                }
+                fprintf(stderr, "FND pre-HC S: l=%d sub=%d r0=%d n=%d tot=%lld bad=%d first=%d val=%g\n", l, sub, r0, n,
+                        (long long)tot, nbad, firstz, firstz >= 0 ? double(S[firstz]) : 0.0);
+            }
+        }
         float * inj = a.inject + int64_t(r0) * 4;
         if (phase == 0) {
             // 0a: the previous sublayer's exchange. PB3: folded into HC's prescale (hct_mix reads the streams once),
@@ -2123,6 +2153,8 @@ bool prompt_path::layer_half(const prompt_chunk & c,
                           !fn::hc::hct_mix(ha, cb, a.hct, hs, s)) ||
                     (fold && !freed())) {
                     return err.empty() ? fail(err, "prompt: HC") : false;
+                        }
+
                 }
                 note(hz ? &route_counts::hc_ladder : &route_counts::hc_retained);
                 count(sub == 0 ? psite::hc_attn : psite::hc_ffn);
@@ -2565,13 +2597,24 @@ bool prompt_path::layer_half(const prompt_chunk & c,
                     note(!dcf.retained() ? &route_counts::exd_grouped : &route_counts::exd_per_task);
                     note_fmt(&route_counts::ex_fmts, static_cast<int32_t>(gf));
                 }
-                if ((own && !fn::experts::ep_group(n, fn::experts::ep_task_rows(gf), ids, rt, a.err + 2, s, lists)) ||
-                    (own && skip != nullptr && !fn::experts::es_drop(rt, skip, s)) ||
-                    (ring ? (own && !fn::experts::ep_task_offsets(rt, toff, s)) :
-                            !(gcf.retained() ? fn::experts::ep_gate_up(gf, n, gu, s) :
-                                               fn::experts::ep_gate_up_ladder(gf, gcf.tile, n, gu, ltasks[0],
-                                                                              rt.counters + 2, s)))) {
-                    return fail(err, "prompt: experts gate/up");
+                {
+                    const bool g_ok =
+                        !(own && !fn::experts::ep_group(n, fn::experts::ep_task_rows(gf), ids, rt, a.err + 2, s, lists));
+                    const bool d_ok = !(own && skip != nullptr && !fn::experts::es_drop(rt, skip, s));
+                    const bool o_ok = !(ring && own && !fn::experts::ep_task_offsets(rt, toff, s));
+                    const bool gu_ok =
+                        ring ? true
+                             : (gcf.retained() ? fn::experts::ep_gate_up(gf, n, gu, s)
+                                               : fn::experts::ep_gate_up_ladder(gf, gcf.tile, n, gu, ltasks[0],
+                                                                                rt.counters + 2, s));
+                    if (!(g_ok && d_ok && o_ok && gu_ok)) {
+                        std::fprintf(::stderr,
+                                     "FND gu-fail l=%d gf=%d df=%d ring=%d own=%d group=%d drop=%d offs=%d gu=%d "
+                                     "retained=%d\n",
+                                     l, int(gf), int(df), int(ring), int(own), int(g_ok), int(d_ok), int(o_ok),
+                                     int(gu_ok), int(gcf.retained()));
+                        return fail(err, "prompt: experts gate/up");
+                    }
                 }
                 // the shared expert: gate and up (DP2's packing), the GLU, its down (EX1's) scaled by sg
                 if (w.sh_gate.n_out != 320 || w.sh_up.n_out != 320) {
@@ -2883,6 +2926,9 @@ bool prompt_path::draft_half(const prompt_chunk & c, int32_t h, int32_t phase, s
         };
         const auto dtc = [&](const fn::dense::pt_args & pt, const dense_weight * dw) {
             const fn::model::lad_cfg cfg = lad_route(dkey(dw, pt.k, pt.n), pt.rows, force_.dense);
+            std::fprintf(::stderr, "FND dtc: dw=%p k=%d n=%d rows=%d a0=%p a1=%p nseg=%d retained=%d tile=%d\n",
+                         (const void *)dw, pt.k, pt.n, pt.rows, (const void *)pt.x.a0, (const void *)pt.x.a1, pt.n_seg,
+                         int(cfg.retained()), cfg.tile);
             if (cfg.retained()) {
                 note(&route_counts::dense_retained);
                 return fn::dense::pd_tc(pt, s);
@@ -2994,11 +3040,19 @@ bool prompt_path::draft_half(const prompt_chunk & c, int32_t h, int32_t phase, s
                                                      "test hidden rows", err))) {
                 return err.empty() ? fail(err, "prompt: test hidden rows beyond the given rows") : false;
             }
-            if (!cv || !fn::draft::dcp_norm(na, s) || !dtc(pt, &d.w.eh) || !fn::hc::hcp_down(ha, s) ||
-                !fn::xchg::pstamp(a.mom_send, gmom, n, fn::xchg::pkind::mom, s) ||
-                (!m_->single &&
-                 !cuda_ok(cudaEventRecord(static_cast<cudaEvent_t>(lm.prod[k]), s), "mom produced", err))) {
-                return err.empty() ? fail(err, "prompt: draft input") : false;
+            {
+                const bool b_cv  = cv;
+                const bool b_np  = fn::draft::dcp_norm(na, s);
+                const bool b_dtc = dtc(pt, &d.w.eh);
+                const bool b_hd  = fn::hc::hcp_down(ha, s);
+                const bool b_ps  = fn::xchg::pstamp(a.mom_send, gmom, n, fn::xchg::pkind::mom, s);
+                std::fprintf(::stderr, "FND draft-in: cv=%d norm=%d dtc=%d hcp_down=%d pstamp=%d single=%d\n",
+                             int(b_cv), int(b_np), int(b_dtc), int(b_hd), int(b_ps), int(m_->single));
+                if (!b_cv || !b_np || !b_dtc || !b_hd || !b_ps ||
+                    (!m_->single &&
+                     !cuda_ok(cudaEventRecord(static_cast<cudaEvent_t>(lm.prod[k]), s), "mom produced", err))) {
+                    return err.empty() ? fail(err, "prompt: draft input") : false;
+                }
             }
             lm.g_prod[k] = gmom;
             if (test_eh_[k] != nullptr &&

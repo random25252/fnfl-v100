@@ -12,6 +12,8 @@ namespace {
 constexpr int32_t D  = 2560;
 constexpr int32_t v8 = D / 8;  // 8-value groups a row
 
+__device__ unsigned int fnd_seen[1] = {0};
+
 __device__ __forceinline__ bool header_ok(const uint8_t * slot, uint64_t gen) {
     const volatile uint32_t * h = reinterpret_cast<const volatile uint32_t *>(slot);
     return h[0] == static_cast<uint32_t>(gen) && h[1] == static_cast<uint32_t>(gen >> 32);
@@ -41,6 +43,18 @@ __global__ void ppack_kernel(int32_t rows, const float * __restrict__ partial, u
                (static_cast<uint32_t>(__half_as_ushort(__float2half_rn(v[2 * k + 1]))) << 16);
     }
     if (bad) {
+        // FND: name the first offending row/column and the value
+        const uint32_t prev = atomicAdd(reinterpret_cast<unsigned int *>(&fnd_seen[0]), 0u);
+        (void)prev;
+        if (atomicCAS(reinterpret_cast<unsigned int *>(&fnd_seen[0]), 0u, 1u) == 0u) {
+            for (int32_t k = 0; k < 8; ++k) {
+                if (!(fabsf(v[k]) <= 65504.0f)) {
+                    printf("FND prange: i=%lld row=%lld col=%d v=%f rows=%d\n", (long long)i, (long long)(i / v8),
+                           int(i % v8) * 8 + k, double(v[k]), rows);
+                    break;
+                }
+            }
+        }
         atomicOr(err, err_prange);
     }
     reinterpret_cast<uint4 *>(slot + pmsg_payload_at)[i] = make_uint4(h[0], h[1], h[2], h[3]);

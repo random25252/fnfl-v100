@@ -352,6 +352,8 @@ template <hcp_form FORM> __global__ void __launch_bounds__(256) hcp_up_kernel(co
             a.mixed[int64_t(row) * a.ld_mixed + cf] = mixed;
             if (a.mixed16 != nullptr) {
                 if (!(fabsf(mixed) <= 65504.0f) && a.err != nullptr) {
+                    printf("FND mixed OVERFLOW A: blk=%d th=%d row=%d cf=%d mixed=%f\n", int(blockIdx.x), int(threadIdx.x),
+                           int(row), int(cf), double(mixed));
                     atomicOr(a.err, 1u);
                 }
                 a.mixed16[int64_t(row) * a.ld_mixed16 + cf] = __half_as_ushort(__float2half_rn(mixed));
@@ -913,6 +915,12 @@ struct up_epi {
             const float g  = v[s] * ls * __ldg(w.up_s + col[s]);
             const float ri = a.rinv[int64_t(row) * 4 + s];
             const float gx = gamma_of<hcp_form::replicated>(a.w, s, f) * a.x[(int64_t(row) * 4 + s) * D + f];
+            if (blockIdx.x == 0 && f == 1072 && row == 4 && s == 0) {
+                printf("FND nan in: v=%f ls=%f up_s=%f g=%f ri=%f x=%f gamma=%f gx=%f\n", double(v[0]), double(ls),
+                       double(__ldg(w.up_s + col[0])), double(g), double(ri),
+                       double(a.x[(int64_t(row) * 4 + 0) * D + f]),
+                       double(gamma_of<hcp_form::replicated>(a.w, 0, f)), double(gx));
+            }
             mixed          = fmaf(gx * ri, sigm(g), mixed);
         }
         mixed = 0.25f * mixed;
@@ -921,6 +929,7 @@ struct up_epi {
         }
         if (a.mixed16 != nullptr) {
             if (!(fabsf(mixed) <= 65504.0f) && a.err != nullptr) {
+
                 atomicOr(a.err, 1u);
             }
             a.mixed16[int64_t(row) * a.ld_mixed16 + f] = __half_as_ushort(__float2half_rn(mixed));

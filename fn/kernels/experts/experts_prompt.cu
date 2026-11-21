@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "fn/kernels/experts/experts_prompt.h"
 #include "fn/kernels/experts/experts_prompt_dev.cuh"
 #include "fn/model/shapes.h"
@@ -739,6 +740,11 @@ bool ep_gate_up(fmt f, int32_t rows, const ep_gate_up_args & a, void * stream) {
         (a.glu_f32 != nullptr && !aligned16(a.glu_f32)) || (reinterpret_cast<uintptr_t>(a.wt) & 7u) != 0 ||
         (a.task_off != nullptr && (a.wt == nullptr || !aligned4(a.task_off) || a.e_lo < 0 || a.e_lo > a.e_hi ||
                                    a.e_hi > n_expert || a.grid < 0))) {
+        std::fprintf(::stderr,
+                     "FND ep_gate_up REJECT f=%d rows=%d w=%p grids=%p x=%p route=%d glu=%d st=%p wt=%p taskoff=%p "
+                     "e_lo=%d e_hi=%d grid=%d\n",
+                     int(f), rows, (const void *)a.w, (const void *)a.grids, (const void *)a.x, int(route_ok(a.route)),
+                     int(aligned4(a.glu)), stream, (const void *)a.wt, (const void *)a.task_off, a.e_lo, a.e_hi, a.grid);
         return false;
     }
     const cudaStream_t st = static_cast<cudaStream_t>(stream);
@@ -757,6 +763,8 @@ bool ep_gate_up(fmt f, int32_t rows, const ep_gate_up_args & a, void * stream) {
             return launch_gate_up<fmt::q4_k>(a, st);
         case fmt::q5_k:
             return launch_gate_up<fmt::q5_k>(a, st);
+        case fmt::iq4_xs: // IQ3S: the IQ3_S file's layer 47 routed gate/up
+            return launch_gate_up<fmt::iq4_xs>(a, st);
         default:
             return false;
     }
