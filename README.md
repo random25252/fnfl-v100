@@ -1,3 +1,9 @@
+# ⚠️ This is a fork. Please use and contribute to the upstream project: [bitexploder/fnfl-v100](https://github.com/bitexploder/fnfl-v100)
+
+This fork only exists to carry a pull request (branch `pr/swift-iq3s`). Issues, pull requests and stars belong upstream.
+
+---
+
 <p align="center">
 <img src="media/fnfl-logo.jpg" alt="FNFL logo: a mascot in a cowboy hat riding a Tesla V100 like a rocket" width="480">
 </p>
