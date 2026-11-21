@@ -1,7 +1,7 @@
-// draft_fmt: the format of the LM head rows the draft copy holds.
-// q5_k  - default; IQ3_XXS and most GSQ-RCO quants
-// q8_0  - UD-Q4_K_XL style output.weight
-// q6_k  - IQ3_S / GSQ-RCO style output.weight (216 bytes per 256 rows -> see dense::row_bytes)
+// draft_fmt: the format of the LM head rows (output.weight) the target head and the draft head copy read.
+// q5_k  - default; ISTA-DASLab's IQ3_XXS file
+// q8_0  - Unsloth's UD-Q4_K_XL file
+// q6_k  - the Swift IQ3_S file (210 bytes a 256: dense::row_bytes)
 #pragma once
 #include <cstdint>
 
