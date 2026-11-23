@@ -34,6 +34,20 @@ Claude (Anthropic's coding agent), directed and run on the fork owner's machine.
     where a long prompt's time goes, the hardware floor, and the ideas left for faster prompt reading. Its
     microbenchmark (`docs/iq3s-tools/p2p/graph_copy_update.cu.txt`) shows in a minute whether your platform has the
     copy problem.
+- **Slightly faster prompt reading on any two V100s.** Two kernel changes to the prompt path, both opt-in and both
+  bitwise identical in output.
+  - `--fnfl-hc-up-staged on`: the hyper-connection mixer's up product, with its last step staged in shared memory so
+    its reads and writes are contiguous.
+  - `--fnfl-dense-grouped on`: the dense products' thread blocks ordered so they share weight slices in L2, as
+    CUTLASS orders them.
+  - Together with Swift on two V100s: an 8,192-token prompt from 2.27 to 2.18 s, and 32K tokens at 3,930 instead of
+    3,800 tok/s (+3–5%). They apply where the prompt path runs its default kernels, which is the case for the IQ3
+    quants.
+  - [The prefill write-up](https://github.com/random25252/fnfl-v100/blob/iq3s-swift/docs/fnfl/prefill-headroom.md)
+    measures where a prompt's time goes on this hardware: the kernel ceilings against cuBLAS, the cards' power cap,
+    and the realistic limit with more work. [The decode
+    write-up](https://github.com/random25252/fnfl-v100/blob/iq3s-swift/docs/fnfl/decode-headroom.md) has the same for
+    generation. Both have ranked lists of what is left to try.
 - **Diagnostics:** per-message wait counters for the card-to-card exchanges (a compile-time option) and verification
   tools for new quants.
 
@@ -43,10 +57,12 @@ Claude (Anthropic's coding agent), directed and run on the fork owner's machine.
   upstream's figures (the write-up's microbenchmark checks this in a minute);
 - anyone on such a board whose short prompts or agent turns are slow to start: if a 512-token prompt takes much longer
   to its first token than a 640-token one, `--fnfl-prompt-graphs off` is for you. Interactive chat and agentic coding,
-  where most turns add a few hundred tokens to a long history, gain the most. Long fresh prompts don't change.
+  where most turns add a few hundred tokens to a long history, gain the most. Long fresh prompts don't change;
+- anyone reading long prompts with an IQ3 quant on two V100s, for the few percent from the two prompt-kernel switches.
 
-On a platform where GPU-to-GPU writes work properly, the upstream project is what you want. Every flag defaults to
-upstream's behaviour, so the fork behaves like upstream unless you pass them.
+On a platform where GPU-to-GPU writes work properly, the upstream project is what you want, apart from those two
+prompt-kernel switches. Every flag defaults to upstream's behaviour, so the fork behaves like upstream unless you pass
+them.
 
 Tested on one machine only. The original README follows.
 
