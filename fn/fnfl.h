@@ -40,6 +40,12 @@ struct fnfl_config {
     // SP2's switch (--fnfl-draft-attention dense|sparse; empty: dense): the draft's attention over its cells; it
     // expires at Fable's disposition of SP2
     std::string draft_attention;
+    // The card-to-card exchanges on platforms whose SM-issued peer stores collapse (docs/fnfl/decode-headroom.md):
+    // --fnfl-hmix-route peer|host (empty: peer), X-HMIX straight to the peer or through pinned host memory with a
+    // landing kernel on the receiver (two devices only); --fnfl-hc-packed on|off (off), X-HC's moments as one
+    // contiguous run a block. Outputs are bitwise the same either way.
+    std::string hmix_route;
+    bool hc_packed = false;
     bool check_state = false;      // TEST (--fnfl-check-state): the shell compares fnfl_slot_tokens after every call
     std::vector<int32_t> test_eog; // TEST (--fnfl-test-eog ID): more end-of-generation IDs
     int32_t test_fail_step = 0;    // TEST (--fnfl-test-fail-step K): step K of the next request fails once; 0 off

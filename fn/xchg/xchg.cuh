@@ -14,6 +14,53 @@ namespace fn::xchg {
 // polls of one spin-wait before it gives up and reports (at about 0.2-1 us a poll, 0.2-1 s)
 constexpr uint32_t poll_budget = 1u << 20;
 
+#ifdef FNFL_WAIT_STATS
+// Diagnostic build only (off unless FNFL_WAIT_STATS is defined): per poll code (the err bit of a message), lane 0 of
+// each polling warp counts its polls, the polls that found the payload not yet landed, the SM cycles it then spun
+// and the longest spin. Each translation unit has its own counters; xchg.cu collects them (wait_stats_register).
+namespace wait_stats_detail {
+constexpr int32_t n_code = 32;
+static __device__ unsigned long long g_wait[n_code][4]; // polls, polls that waited, cycles waited, max cycles
+
+__device__ __forceinline__ void note(uint32_t code, bool waited, long long cycles) {
+    if ((threadIdx.x & 31u) != 0u || code == 0u) {
+        return;
+    }
+    const int32_t c = __ffs(static_cast<int32_t>(code)) - 1;
+    atomicAdd(&g_wait[c][0], 1ull);
+    if (waited) {
+        atomicAdd(&g_wait[c][1], 1ull);
+        atomicAdd(&g_wait[c][2], static_cast<unsigned long long>(cycles));
+        atomicMax(&g_wait[c][3], static_cast<unsigned long long>(cycles));
+    }
+}
+
+static void collect(int32_t dev, unsigned long long (*out)[4]) {
+    int32_t prev = 0;
+    cudaGetDevice(&prev);
+    cudaSetDevice(dev);
+    unsigned long long h[n_code][4] = {};
+    if (cudaMemcpyFromSymbol(h, g_wait, sizeof h) == cudaSuccess) {
+        for (int32_t i = 0; i < n_code; ++i) {
+            out[i][0] += h[i][0];
+            out[i][1] += h[i][1];
+            out[i][2] += h[i][2];
+            out[i][3] = h[i][3] > out[i][3] ? h[i][3] : out[i][3];
+        }
+    }
+    cudaSetDevice(prev);
+}
+
+struct reg {
+    reg() { wait_stats_register(&collect); }
+};
+static reg reg_inst;
+} // namespace wait_stats_detail
+#define FNFL_WAIT_NOTE(code, waited, cycles) ::fn::xchg::wait_stats_detail::note((code), (waited), (cycles))
+#else
+#define FNFL_WAIT_NOTE(code, waited, cycles) ((void)0)
+#endif
+
 // The payload rule: every NaN is sent as the canonical NaN, so no payload word equals the sentinel.
 __device__ __forceinline__ uint32_t canonical(float v) {
     return v != v ? canonical_nan : __float_as_uint(v);
@@ -58,6 +105,9 @@ template <int N>
 __device__ __forceinline__ void poll(const uint4 * const (&p)[N], uint4 (&v)[N], uint32_t * err, uint32_t code,
                                      uint32_t sent = sentinel) {
     uint32_t pending = (1u << N) - 1u;
+#ifdef FNFL_WAIT_STATS
+    long long t0 = 0;
+#endif
     for (uint32_t n = 0;; ++n) {
 #pragma unroll
         for (int i = 0; i < N; ++i) {
@@ -72,8 +122,16 @@ __device__ __forceinline__ void poll(const uint4 * const (&p)[N], uint4 (&v)[N],
             }
         }
         if (pending == 0u) {
+#ifdef FNFL_WAIT_STATS
+            FNFL_WAIT_NOTE(code, n > 0, n > 0 ? clock64() - t0 : 0);
+#endif
             return;
         }
+#ifdef FNFL_WAIT_STATS
+        if (n == 0) {
+            t0 = clock64();
+        }
+#endif
         if (n >= poll_budget) {
             atomicOr(err, code);
             return;
@@ -83,11 +141,22 @@ __device__ __forceinline__ void poll(const uint4 * const (&p)[N], uint4 (&v)[N],
 
 // FMS2 item 7: poll's form for 16-bit payloads, one 16-byte group (landed16)
 __device__ __forceinline__ void poll16(const uint4 * p, uint4 & v, uint32_t * err, uint32_t code) {
+#ifdef FNFL_WAIT_STATS
+    long long t0 = 0;
+#endif
     for (uint32_t n = 0;; ++n) {
         v = load_poll(p);
         if (landed16(v)) {
+#ifdef FNFL_WAIT_STATS
+            FNFL_WAIT_NOTE(code, n > 0, n > 0 ? clock64() - t0 : 0);
+#endif
             return;
         }
+#ifdef FNFL_WAIT_STATS
+        if (n == 0) {
+            t0 = clock64();
+        }
+#endif
         if (n >= poll_budget) {
             atomicOr(err, code);
             return;
@@ -165,6 +234,12 @@ __device__ __forceinline__ void put_words(uint32_t * local, uint32_t * peer, int
     }
 }
 
+// --fnfl-hc-packed: word j (0 .. 323: u rows, then the q rows) of stream s of row b in a region of the
+// joint X-HC layout (xchg.h hcj_run_at; down block vb = 4 g + s holds rows 18 g .. 18 g + 17 of stream s)
+__device__ __forceinline__ int32_t hcp_at(int32_t s, int32_t j, int32_t b) {
+    return hcj_run_at((j / hcj_rows_block) * 4 + s, b) + j % hcj_rows_block;
+}
+
 // one poll of an 8-byte word pair (T-GREEDY), as load_poll
 __device__ __forceinline__ uint2 load_poll2(const uint2 * p) {
     uint2 v;
@@ -174,14 +249,77 @@ __device__ __forceinline__ uint2 load_poll2(const uint2 * p) {
 
 // Polls the 8-byte pair *p until neither word holds the sentinel, as poll; returns what it last saw.
 __device__ __forceinline__ uint2 poll2(const uint2 * p, uint32_t * err, uint32_t code) {
+#ifdef FNFL_WAIT_STATS
+    long long t0 = 0;
+#endif
     for (uint32_t n = 0;; ++n) {
         const uint2 v = load_poll2(p);
         if (v.x != sentinel && v.y != sentinel) {
+#ifdef FNFL_WAIT_STATS
+            FNFL_WAIT_NOTE(code, n > 0, n > 0 ? clock64() - t0 : 0);
+#endif
             return v;
         }
+#ifdef FNFL_WAIT_STATS
+        if (n == 0) {
+            t0 = clock64();
+        }
+#endif
         if (n >= poll_budget) {
             atomicOr(err, code);
             return v;
+        }
+    }
+}
+
+// --fnfl-hc-packed: poll's form for N4 16-byte words and N2 8-byte pairs together
+template <int N4, int N2>
+__device__ __forceinline__ void poll_mixed(const uint4 * const (&p4)[N4], uint4 (&v4)[N4], const uint2 * const (&p2)[N2],
+                                           uint2 (&v2)[N2], uint32_t * err, uint32_t code) {
+    static_assert(N4 + N2 <= 32, "one pending bit a word");
+    uint32_t pending = (N4 + N2 == 32) ? ~0u : (1u << (N4 + N2)) - 1u;
+#ifdef FNFL_WAIT_STATS
+    long long t0 = 0;
+#endif
+    for (uint32_t n = 0;; ++n) {
+#pragma unroll
+        for (int i = 0; i < N4; ++i) {
+            if (pending >> i & 1u) {
+                v4[i] = load_poll(p4[i]);
+            }
+        }
+#pragma unroll
+        for (int i = 0; i < N2; ++i) {
+            if (pending >> (N4 + i) & 1u) {
+                v2[i] = load_poll2(p2[i]);
+            }
+        }
+#pragma unroll
+        for (int i = 0; i < N4; ++i) {
+            if (landed(v4[i])) {
+                pending &= ~(1u << i);
+            }
+        }
+#pragma unroll
+        for (int i = 0; i < N2; ++i) {
+            if (v2[i].x != sentinel && v2[i].y != sentinel) {
+                pending &= ~(1u << (N4 + i));
+            }
+        }
+        if (pending == 0u) {
+#ifdef FNFL_WAIT_STATS
+            FNFL_WAIT_NOTE(code, n > 0, n > 0 ? clock64() - t0 : 0);
+#endif
+            return;
+        }
+#ifdef FNFL_WAIT_STATS
+        if (n == 0) {
+            t0 = clock64();
+        }
+#endif
+        if (n >= poll_budget) {
+            atomicOr(err, code);
+            return;
         }
     }
 }

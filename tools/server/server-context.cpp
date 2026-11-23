@@ -534,6 +534,8 @@ private:
         lp.config.spec_d         = params_base.fnfl.spec_d;
         lp.config.small_read_rows     = params_base.fnfl.small_read_rows;  // MUP1
         lp.config.draft_attention = params_base.fnfl.draft_attention;
+        lp.config.hmix_route      = params_base.fnfl.hmix_route;
+        lp.config.hc_packed       = params_base.fnfl.hc_packed;
         lp.config.check_state    = params_base.fnfl.check_state;
         lp.config.test_eog       = params_base.fnfl.test_eog;
         lp.config.test_fail_step = params_base.fnfl.test_fail_step;

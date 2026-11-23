@@ -16,6 +16,7 @@
 #include "fn/vision/image.h"
 #include "fn/xchg/link.h"
 #include "fn/xchg/slow.h"
+#include "fn/xchg/xchg.h"
 
 #include <cuda_runtime_api.h>
 
@@ -464,6 +465,16 @@ fnfl_engine * fnfl_load(const fnfl_load_params & params, fnfl_model_meta & meta,
         err = "--fnfl-ple-table is lazy or full, not '" + params.config.ple_table + "'";
         return nullptr;
     }
+    // the exchange switches, before the rings are made (fn/xchg/xchg.h)
+    if (!params.config.hmix_route.empty() && params.config.hmix_route != "peer" && params.config.hmix_route != "host") {
+        err = "--fnfl-hmix-route is peer or host, not '" + params.config.hmix_route + "'";
+        return nullptr;
+    }
+    fn::xchg::set_hmix_host(params.config.hmix_route == "host");
+    fn::xchg::set_hc_packed(params.config.hc_packed);
+    fprintf(stderr, "FNFL: --fnfl-hmix-route %s; --fnfl-hc-packed %s\n",
+            params.config.hmix_route.empty() ? "peer (default)" : params.config.hmix_route.c_str(),
+            params.config.hc_packed ? "on" : "off (default)");
     fn::loader::run_load_report lr;
     auto m = std::make_unique<fn::model::model>();
     if (!fn::loader::load_for_run(lp, c.n_ctx_slot, *m, lr, err)) {

@@ -7,6 +7,14 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#ifdef FNFL_WAIT_STATS
+#include <chrono>
+#include <cstdlib>
+#include <string>
+#include <thread>
+#endif
 
 namespace fn::xchg {
 namespace {
@@ -93,6 +101,11 @@ rings::rings(int32_t dev0, int32_t dev1) {
         device_scope ds(dev_[c]);
         ok = ds.ok && cuda_ok(cudaMalloc(&buf_[c], size_t(card_words) * sizeof(float)), "cudaMalloc rings") &&
              cuda_ok(cudaMalloc(&err_[c], sizeof(uint32_t)), "cudaMalloc err");
+        if (ok && dev_[0] != dev_[1] && hmix_host_enabled()) { // one device: one stream, the landing would deadlock
+            ok = cuda_ok(cudaHostAlloc(&hbuf_[c], size_t(n_slot) * slot_bytes(msg::hmix),
+                                       cudaHostAllocPortable | cudaHostAllocMapped),
+                         "cudaHostAlloc hmix");
+        }
     }
     ok_ = ok && reset_all();
 }
@@ -120,7 +133,17 @@ rings::~rings() {
         if (err_[c] != nullptr) {
             cudaFree(err_[c]);
         }
+        if (hbuf_[c] != nullptr) {
+            cudaFreeHost(hbuf_[c]);
+        }
     }
+}
+
+float * rings::host_hmix(int32_t card, int32_t s) const {
+    if (card < 0 || card > 1 || s < 0 || s >= n_slot || hbuf_[card] == nullptr) {
+        return nullptr;
+    }
+    return hbuf_[card] + int64_t(s) * slot_words(msg::hmix);
 }
 
 float * rings::slot(int32_t card, msg m, int32_t s) const {
@@ -144,6 +167,10 @@ bool rings::reset_all() const {
                                     size_t(hmix_layout::code_words) * sizeof(float)),
                          "prefill codes")) {
                 return false;
+            }
+            if (float * h = host_hmix(c, s); h != nullptr) {
+                std::memset(h, 0xff, size_t(slot_bytes(msg::hmix)));
+                std::memset(h + hmix_layout::code_at, 0x80, size_t(hmix_layout::code_words) * sizeof(float));
             }
         }
         if (!cuda_ok(cudaDeviceSynchronize(), "prefill sync")) {
@@ -486,4 +513,165 @@ bool test_recv(msg m, int32_t rows, int32_t sender, uint32_t k, float * slot, ui
     }
 }
 
+#ifdef FNFL_WAIT_STATS
+namespace {
+constexpr int32_t ws_codes = 32;
+constexpr int32_t ws_max_units = 256;
+wait_collector ws_units[ws_max_units];
+std::atomic<int32_t> ws_n{0};
+
+const char * ws_name(int32_t bit) {
+    switch (bit) {
+        case 0: return "X-HC";
+        case 1: return "X-HMIX";
+        case 3: return "X-A";
+        case 4: return "X-F";
+        case 5: return "X-ROUTE";
+        case 6: return "X-SELECT";
+        case 7: return "X-PLE";
+        case 10: return "T-GREEDY";
+        case 11: return "round start";
+        case 12: return "sampler";
+        case 13: return "X-DRAFT-IN";
+        case 14: return "X-HC-own";
+        default: return "other";
+    }
+}
+
+void ws_dump(const std::string & dir) {
+    std::string path = dir + "/wait-stats.txt";
+    FILE * f = fopen(path.c_str(), "w");
+    if (f == nullptr) {
+        return;
+    }
+    int32_t n_dev = 0;
+    cudaGetDeviceCount(&n_dev);
+    fprintf(f, "# lane 0 of each polling warp; cycles at the SM clock\n");
+    fprintf(f, "%-4s %-12s %14s %14s %18s %14s\n", "dev", "message", "polls", "waited", "cycles_waited", "max_cycles");
+    for (int32_t d = 0; d < n_dev && d < 2; ++d) {
+        unsigned long long acc[ws_codes][4] = {};
+        const int32_t n = ws_n.load();
+        for (int32_t i = 0; i < n && i < ws_max_units; ++i) {
+            ws_units[i](d, acc);
+        }
+        for (int32_t c = 0; c < ws_codes; ++c) {
+            if (acc[c][0] != 0) {
+                fprintf(f, "%-4d %-12s %14llu %14llu %18llu %14llu\n", d, ws_name(c), acc[c][0], acc[c][1], acc[c][2],
+                        acc[c][3]);
+            }
+        }
+    }
+    fclose(f);
+}
+
+void ws_thread() {
+    const char * dir = getenv("FNFL_WAIT_STATS_DIR");
+    if (dir == nullptr) {
+        return;
+    }
+    const std::string d = dir, req = d + "/dump-request";
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        FILE * f = fopen(req.c_str(), "r");
+        if (f != nullptr) {
+            fclose(f);
+            ws_dump(d);
+            remove(req.c_str());
+        }
+    }
+}
+} // namespace
+
+void wait_stats_register(wait_collector c) {
+    const int32_t i = ws_n.fetch_add(1);
+    if (i < ws_max_units) {
+        ws_units[i] = c;
+    }
+    if (i == 0) {
+        std::thread(ws_thread).detach();
+    }
+}
+#endif
+
+} // namespace fn::xchg
+
+// ---- X-HMIX through host memory (xchg.h land_hmix; --fnfl-hmix-route host) ----
+namespace fn::xchg {
+namespace {
+constexpr int32_t land_row_u4 = words_hmix / 4 + words_hmix / 16 + words_hmix / 32 * 2 / 4; // 320 + 80 + 20
+static_assert(land_row_u4 == 420, "the peer half: 6,720 bytes a row");
+
+__global__ void __launch_bounds__(256) land_hmix_kernel(int32_t rows, int32_t p, float * host, float * slot,
+                                                        uint32_t * err) {
+    const int32_t n = rows * land_row_u4;
+    uint4 * h4 = reinterpret_cast<uint4 *>(host);
+    uint4 * s4 = reinterpret_cast<uint4 *>(slot);
+    for (int32_t u = blockIdx.x * blockDim.x + threadIdx.x; u < n; u += gridDim.x * blockDim.x) {
+        const int32_t b = u / land_row_u4, i = u - b * land_row_u4;
+        int32_t at;
+        uint32_t sent = sentinel;
+        if (i < words_hmix / 4) { // F32
+            at = (b * hmix_layout::width + p * words_hmix) / 4 + i;
+        } else if (i < words_hmix / 4 + words_hmix / 16) { // codes
+            at = (hmix_layout::code_at + (b * hmix_layout::width + p * words_hmix) / 4) / 4 + (i - words_hmix / 4);
+            sent = code_sentinel;
+        } else { // scales: {d, s} of runs p*40 .. p*40+39
+            at = (hmix_layout::scale_at + 2 * (b * hmix_layout::runs + p * (words_hmix / 32))) / 4 +
+                 (i - words_hmix / 4 - words_hmix / 16);
+        }
+        const uint4 * const pp[1] = {h4 + at};
+        uint4 v[1];
+        poll<1>(pp, v, err, err_poll_hmix, sent);
+        s4[at] = v[0];
+        reset4(h4 + at, sent);
+    }
+}
+} // namespace
+
+namespace {
+// -1: unset (the environment decides on first use), 0 off, 1 on
+std::atomic<int32_t> g_hmix_host{-1};
+std::atomic<int32_t> g_hc_packed{-1};
+
+bool switch_on(std::atomic<int32_t> & v, const char * env, const char * what) {
+    int32_t cur = v.load();
+    if (cur < 0) {
+        const char * e = std::getenv(env);
+        const int32_t want = e != nullptr && e[0] == '1' ? 1 : 0;
+        if (v.compare_exchange_strong(cur, want)) {
+            cur = want;
+            if (want == 1) {
+                std::fprintf(stderr, "fn::xchg: %s on (%s=1)\n", what, env);
+            }
+        }
+    }
+    return cur == 1;
+}
+} // namespace
+
+void set_hmix_host(bool on) {
+    g_hmix_host.store(on ? 1 : 0);
+}
+
+bool hmix_host_enabled() {
+    return switch_on(g_hmix_host, "FNFL_HMIX_HOST", "X-HMIX via host memory");
+}
+
+void set_hc_packed(bool on) {
+    g_hc_packed.store(on ? 1 : 0);
+}
+
+bool hc_packed_enabled() {
+    return switch_on(g_hc_packed, "FNFL_HC_PACKED", "X-HC packed");
+}
+
+bool land_hmix(int32_t rows, int32_t peer_half, float * host, float * slot, uint32_t * err, void * stream) {
+    if (rows < 1 || rows > max_rows || (peer_half != 0 && peer_half != 1) || host == nullptr || slot == nullptr ||
+        err == nullptr) {
+        return false;
+    }
+    const int32_t n = rows * land_row_u4;
+    land_hmix_kernel<<<(n + 255) / 256, 256, 0, static_cast<cudaStream_t>(stream)>>>(rows, peer_half, host, slot, err);
+    return cudaGetLastError() == cudaSuccess;
+}
 } // namespace fn::xchg

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -107,6 +108,8 @@ int fnfl_xchg_test(int dev0, int dev1, int32_t rounds, uint32_t rows_mask) {
     {
         card_ctx cards[2];
         ok = cards[0].init(dev0) && cards[1].init(dev1);
+        // --fnfl-hmix-route host: the rings take their host X-HMIX slots (two devices only), so both routes run below
+        fn::xchg::set_hmix_host(!loopback);
         fn::xchg::rings rg(dev0, dev1);
         ok = ok && rg.ok();
 
@@ -131,6 +134,10 @@ int fnfl_xchg_test(int dev0, int dev1, int32_t rounds, uint32_t rows_mask) {
                static_cast<long long>(n_code_ff));
         ok = ok && n_sent_sentinel > 0 && n_inf > 0 && n_code_ff > 0;
 
+        for (const bool host : {false, true}) {
+        if (host && rg.host_hmix(0, 0) == nullptr) {
+            continue; // loopback: one device, no host route
+        }
         for (const int32_t rows : {1, 3}) {
             if (!ok || (rows_mask >> (rows - 1) & 1u) == 0) {
                 continue;
@@ -160,9 +167,12 @@ int fnfl_xchg_test(int dev0, int dev1, int32_t rounds, uint32_t rows_mask) {
                             ok = ok && fn::xchg::test_recv(msg::hc, rows, 1 - c, ku, rg.slot(c, msg::hc, s), rg.err(c),
                                                            cards[c].mism, st);
                         } else if (ph == 2) {
-                            ok = ok &&
-                                 fn::xchg::test_send(msg::hmix, rows, c, ku, rg.slot(1 - c, msg::hmix, s), nullptr, st);
+                            float * const to = host ? rg.host_hmix(1 - c, s) : rg.slot(1 - c, msg::hmix, s);
+                            ok = ok && fn::xchg::test_send(msg::hmix, rows, c, ku, to, nullptr, st);
                         } else {
+                            // the host route: land the peer's half from host memory first (xchg.h land_hmix)
+                            ok = ok && (!host || fn::xchg::land_hmix(rows, 1 - c, rg.host_hmix(c, s),
+                                                                     rg.slot(c, msg::hmix, s), rg.err(c), st));
                             ok = ok && fn::xchg::test_recv(msg::hmix, rows, 1 - c, ku, rg.slot(c, msg::hmix, s),
                                                            rg.err(c), cards[c].mism, st);
                         }
@@ -203,13 +213,26 @@ int fnfl_xchg_test(int dev0, int dev1, int32_t rounds, uint32_t rows_mask) {
                         not_reset += w[i] != (code ? fn::xchg::code_sentinel : fn::xchg::sentinel) ? 1 : 0;
                     }
                 }
-                const bool pass = ok && h[0] == 0 && h[1] == want && err == 0 && not_reset == 0;
-                printf("xchg-test B%d card %d: %d rounds, %llu words checked (want %llu), %llu mismatched, error word "
-                       "0x%x, X-HMIX words not reset %lld, %.2f s%s\n",
-                       rows, c, rounds, h[1], want, h[0], err, static_cast<long long>(not_reset), secs,
+                // the host route: every host slot is back at the sentinels (the landing resets each group it reads)
+                int64_t host_not_reset = 0;
+                for (int32_t s = 0; s < fn::xchg::n_slot && ok && host; ++s) {
+                    const uint32_t * w = reinterpret_cast<const uint32_t *>(rg.host_hmix(c, s));
+                    for (int32_t i = 0; i < fn::xchg::slot_words(msg::hmix); ++i) {
+                        const bool code = i >= fn::xchg::hmix_layout::code_at && i < fn::xchg::hmix_layout::scale_at;
+                        host_not_reset += w[i] != (code ? fn::xchg::code_sentinel : fn::xchg::sentinel) ? 1 : 0;
+                    }
+                }
+                const bool pass =
+                    ok && h[0] == 0 && h[1] == want && err == 0 && not_reset == 0 && host_not_reset == 0;
+                printf("xchg-test B%d%s card %d: %d rounds, %llu words checked (want %llu), %llu mismatched, error "
+                       "word 0x%x, X-HMIX words not reset %lld%s, %.2f s%s\n",
+                       rows, host ? " host route" : "", c, rounds, h[1], want, h[0], err,
+                       static_cast<long long>(not_reset),
+                       host ? (", host words not reset " + std::to_string(host_not_reset)).c_str() : "", secs,
                        pass ? "" : "  FAIL");
                 ok = pass;
             }
+        }
         }
         for (int32_t c = 0; c < 2; ++c) {
             cudaSetDevice(cards[c].dev);

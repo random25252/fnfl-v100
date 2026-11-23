@@ -363,11 +363,22 @@ bool hc_phase(card_ctx & c, const hc_module & h, int32_t set, const float * hres
         if (fused && part == 1) {
             return true;
         }
-        const fn::hc::sub_args a = hc_sub_args(c, h, set, hres, hpost, hx, u);
+        fn::hc::sub_args a = hc_sub_args(c, h, set, hres, hpost, hx, u);
+        a.hc_packed = fused && fn::xchg::hc_packed_enabled() ? 1 : 0; // --fnfl-hc-packed (hc.h sub_args)
+        float * const host_in = rg.host_hmix(r, s); // --fnfl-hmix-route host (xchg.h land_hmix); null: the peer route
+        if (host_in != nullptr) {
+            a.hmix_peer = rg.host_hmix(1 - r, s);
+        }
         if (!fn::hc::sub(rows, fused ? 3 : part + 1, a, c.stream)) {
             return fail(err, "hc sub");
         }
         note(c, fused ? "hc.sub" : part == 0 ? "hc.sub.down" : "hc.sub.up");
+        if (host_in != nullptr && (fused || part == 1)) {
+            if (!fn::xchg::land_hmix(rows, 1 - r, host_in, rg.slot(r, fn::xchg::msg::hmix, s), rg.err(r), c.stream)) {
+                return fail(err, "land hmix");
+            }
+            note(c, "xchg.land_hmix");
+        }
         return true;
     }
     if (part == 0) {

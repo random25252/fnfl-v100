@@ -144,6 +144,7 @@ struct down2_args {
     // HC3: this card's X-HMIX slot of the previous sublayer, its peer half reset to the sentinels (all max_rows rows;
     // xchg.h step 4) after every reader; null: none
     float * hmix_reset = nullptr;
+    int32_t hc_packed = 0; // --fnfl-hc-packed: fused, non-head X-HC in the joint layout (xchg.h hcj_run_at)
 };
 
 struct up2_args {
@@ -158,6 +159,7 @@ struct up2_args {
     uint32_t * runs;        // [40] run counters (arm A and Q8_0 only, HC4): zeroed once; every launch leaves them 0
     uint32_t * err;         // this card's error word (fn::xchg::err_poll_hc when a poll gives up)
     int32_t card;           // 0 or 1
+    int32_t hc_packed = 0;  // --fnfl-hc-packed: as down2_args
 };
 
 constexpr int32_t n_runs_card = n_own / 32; // up2's run counters a card (40)
@@ -220,6 +222,10 @@ struct sub_args {
     float * hmix_peer;       // the peer's X-HMIX slot for this sublayer (peer memory)
     uint32_t * err;          // this card's error word (fn::xchg::err_poll_hc when a poll gives up)
     int32_t card;            // 0 or 1
+    // --fnfl-hc-packed (docs/fnfl/decode-headroom.md): mode 3 (fused), non-head only: X-HC in the joint layout
+    // (xchg.h hcj_run_at), each down block's moments one contiguous run, so the peer link sees 72 writes of up to
+    // 360 bytes instead of 360 of 72; both cards must agree. 0: the lone layout
+    int32_t hc_packed = 0;
 };
 
 // Enqueue on stream; false, with nothing enqueued, for an unsupported row count or mode (1, 2 or 3) or a null or

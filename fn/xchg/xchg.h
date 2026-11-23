@@ -344,6 +344,10 @@ class rings {
 
     // card's receive slot s (0 .. slots_of(m) - 1) of message m: slot_words(m) words, 16-byte aligned
     float * slot(int32_t card, msg m, int32_t s) const;
+    // --fnfl-hmix-route host (land_hmix below): card's X-HMIX receive slot s in pinned host memory, which the peer's
+    // hc_up writes and land_hmix copies into slot(card, msg::hmix, s); null when the route is off, for a view, or
+    // when both cards are one device
+    float * host_hmix(int32_t card, int32_t s) const;
     uint32_t * err(int32_t card) const { return err_[card]; }
 
     // Synchronous (callers have drained both devices): refill every slot with the sentinel (X-HMIX's code words with
@@ -355,6 +359,7 @@ class rings {
   private:
     int32_t dev_[2] = {-1, -1};
     float * buf_[2] = {nullptr, nullptr}; // n_msg x n_slot slots a card
+    float * hbuf_[2] = {nullptr, nullptr}; // the host route's n_slot X-HMIX slots a card, pinned host memory
     uint32_t * err_[2] = {nullptr, nullptr};
     bool ok_ = false;
     bool owns_ = true;
@@ -362,6 +367,21 @@ class rings {
 
 // bytes rings allocates on each card: every slot of every message, and the error word
 int64_t rings_card_bytes();
+
+// X-HMIX through host memory (--fnfl-hmix-route host). On platforms whose SM-issued peer stores collapse when many
+// are in flight (docs/fnfl/decode-headroom.md), this keeps the bulky X-HMIX off the peer link. The sender's hc_up writes the peer half into the receiver's
+// host slot; land_hmix, on the receiver's stream after its own hc_up, polls each of the peer half's 16-byte groups
+// once (rows 0 .. rows-1), stores it into the device slot (where the consumers poll it as before) and resets the host
+// group to its sentinel. Needs the two cards on separate devices and streams (the landing waits on the peer's
+// hc_up), so rings on one device never take the host slots.
+// The two switches (--fnfl-hmix-route host, --fnfl-hc-packed on; docs/fnfl/decode-headroom.md). Set them before any
+// rings are made and before the first pass; both cards read the same values. Unset, they take FNFL_HMIX_HOST=1 and
+// FNFL_HC_PACKED=1 from the environment (fnfl-drive and the benches), else off.
+void set_hmix_host(bool on);
+bool hmix_host_enabled();
+void set_hc_packed(bool on);
+bool hc_packed_enabled();
+bool land_hmix(int32_t rows, int32_t peer_half, float * host, float * slot, uint32_t * err, void * stream);
 
 // ---- FMU2: the joint round's exchange memory ----
 //
@@ -634,5 +654,13 @@ bool recv_select_lanes(int32_t lanes, int32_t rows, float * const * slot, int32_
 // which card r sends after its decide of step j, the slot's only reader and resetter. The draft head's pair is over
 // card r's half of the subset in global IDs (lower ID on an exact tie), the same pair layout. The draft's greedy
 // launches pass no decision-record words (SM1's words 8 .. 11 stay unwritten). The catch-up has none.
+
+#ifdef FNFL_WAIT_STATS
+// Diagnostic build only: each translation unit that includes xchg.cuh registers its poll-wait counters' collector
+// (xchg.cuh wait_stats_detail). With FNFL_WAIT_STATS_DIR set, a background thread writes every registered unit's
+// totals, per device and poll code, to DIR/wait-stats.txt whenever DIR/dump-request exists (then removes it).
+using wait_collector = void (*)(int32_t dev, unsigned long long (*out)[4]);
+void wait_stats_register(wait_collector c);
+#endif
 
 } // namespace fn::xchg

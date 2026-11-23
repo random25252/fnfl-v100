@@ -454,7 +454,26 @@ __device__ __forceinline__ void down_phase(const typename down_param<X, Q>::type
         // Warp b sums row b's moments in HC1c's order (lane r: row 18g + r) and sends them as each block finishes
         // them: 16-byte stores to the peer's X-HC slot and to this card's own copy (xchg::put_hc_rows). The moments
         // are stored as their canonical bits (xchg.h: NaNs canonicalized), so both cards hold the same words.
-        if (warp < B) {
+        // --fnfl-hc-packed: the block's moments of every row as one contiguous run (the joint layout, xchg.h hcj_run_at)
+        const bool pk = FUSED && !H && x_args(p).hc_packed != 0;
+        __shared__ uint32_t pimg[fn::xchg::hcj_block_words];
+        if (pk) {
+            static_assert(H || down_rows == fn::xchg::hcj_rows_block, "the joint layout's block rows");
+            if (warp < B && lane < down_rows) {
+                float v = redx[warp][0][lane];
+#pragma unroll
+                for (int32_t cc = 1; cc < n_col; ++cc) {
+                    v += redx[warp][cc][lane];
+                }
+                pimg[warp * down_rows + lane] = fn::xchg::canonical(v);
+            }
+            __syncthreads();
+            if (warp == 0) {
+                fn::xchg::put_words(reinterpret_cast<uint32_t *>(own_mom),
+                                    reinterpret_cast<uint32_t *>(x_args(p).hc_peer), fn::xchg::hcj_run_at(vb, 0),
+                                    B * down_rows, pimg);
+            }
+        } else if (warp < B) {
             const int32_t b = warp;
             const int32_t r = lane < down_rows ? lane : 0;
             float v = redx[b][0][r];
@@ -476,8 +495,9 @@ __device__ __forceinline__ void down_phase(const typename down_param<X, Q>::type
                 v += ssp[b][i];
             }
             const uint32_t bits = fn::xchg::canonical(v);
-            reinterpret_cast<uint32_t *>(FUSED ? own_mom : a.mom)[b * mom_w + s] = bits; // F32 moment as its bits
-            reinterpret_cast<uint32_t *>(x_args(p).hc_peer)[b * mom_w + s] = bits;
+            const int32_t vat = pk ? 4 * b + s : b * mom_w + s; // packed: the joint layout's v words
+            reinterpret_cast<uint32_t *>(FUSED ? own_mom : a.mom)[vat] = bits; // F32 moment as its bits
+            reinterpret_cast<uint32_t *>(x_args(p).hc_peer)[vat] = bits;
         }
         if constexpr (!FUSED) {
             // release: this card's X-HC slot of the previous sublayer, whose readers (hc_up) have finished (xchg.h);
@@ -1240,7 +1260,53 @@ __device__ __forceinline__ void up_phase(const up2_args & a, const float * hres,
                                                     mp4 + at4[3],     op4 + lb * mrow4, op4 + at4[0], op4 + at4[1],
                                                     op4 + at4[2],     op4 + at4[3]};
             uint4 v[2 * (1 + n_stream)];
+            if (!H && a.hc_packed != 0) {
+                // --fnfl-hc-packed: the joint layout; each stream's 4 words as two 8-byte pairs (a group never straddles
+                // more than two runs, and every run starts 8-byte aligned)
+                const int32_t j0 = lower ? 4 * j4 : n_down; // u words, or the injector's q words
+                const uint4 * p4[2] = {mp4 + lb, op4 + lb}; // v: words 4 lb .. 4 lb + 3
+                const uint2 * mq2 = reinterpret_cast<const uint2 *>(a.hc_ring);
+                const uint2 * oq2 = reinterpret_cast<const uint2 *>(own_ring);
+                const uint2 * p2[4 * n_stream];
+#pragma unroll
+                for (int32_t si = 0; si < n_stream; ++si) {
+                    const int32_t w0 = fn::xchg::hcp_at(si, j0, lb) / 2, w1 = fn::xchg::hcp_at(si, j0 + 2, lb) / 2;
+                    p2[2 * si] = mq2 + w0;
+                    p2[2 * si + 1] = mq2 + w1;
+                    p2[2 * n_stream + 2 * si] = oq2 + w0;
+                    p2[2 * n_stream + 2 * si + 1] = oq2 + w1;
+                }
+                uint4 v4[2];
+                uint2 v2[4 * n_stream];
+                fn::xchg::poll_mixed<2, 4 * n_stream>(p4, v4, p2, v2, a.err, fn::xchg::err_poll_hc);
+                v[0] = v4[0];
+                v[1 + n_stream] = v4[1];
+#pragma unroll
+                for (int32_t si = 0; si < n_stream; ++si) {
+                    v[1 + si] = make_uint4(v2[2 * si].x, v2[2 * si].y, v2[2 * si + 1].x, v2[2 * si + 1].y);
+                    v[2 + n_stream + si] = make_uint4(v2[2 * n_stream + 2 * si].x, v2[2 * n_stream + 2 * si].y,
+                                                      v2[2 * n_stream + 2 * si + 1].x, v2[2 * n_stream + 2 * si + 1].y);
+                }
+            } else {
+#ifdef FNFL_WAIT_STATS
+            // diagnostic build: this card's own moments first (counted under bit 14), then the peer's (X-HC), so the
+            // second wait is what the peer adds beyond this card's own down phase
+            {
+                const uint4 * po[1 + n_stream] = {pp[5], pp[6], pp[7], pp[8], pp[9]};
+                const uint4 * pq[1 + n_stream] = {pp[0], pp[1], pp[2], pp[3], pp[4]};
+                uint4 vo5[1 + n_stream], vq5[1 + n_stream];
+                fn::xchg::poll<1 + n_stream>(po, vo5, a.err, 1u << 14);
+                fn::xchg::poll<1 + n_stream>(pq, vq5, a.err, fn::xchg::err_poll_hc);
+#pragma unroll
+                for (int32_t i = 0; i < 1 + n_stream; ++i) {
+                    v[i] = vq5[i];
+                    v[1 + n_stream + i] = vo5[i];
+                }
+            }
+#else
             fn::xchg::poll<2 * (1 + n_stream)>(pp, v, a.err, fn::xchg::err_poll_hc);
+#endif
+            }
 #pragma unroll
             for (int32_t i = 0; i < 1 + n_stream; ++i) {
                 pv[i] = v[i];
@@ -2577,6 +2643,8 @@ sub_params sub_of(const sub_args & a) {
     p.d.hc_reset = a.hc_reset;
     p.d.hmix_reset = a.hmix_reset;
     p.u = {a.w_up, nullptr, a.hc_ring, nullptr, a.gamma, a.inject, a.hmix_own, a.hmix_peer, nullptr, a.err, a.card};
+    p.d.hc_packed = a.hc_packed; // --fnfl-hc-packed
+    p.u.hc_packed = a.hc_packed;
     p.hres = a.hres;
     p.hx = a.hx;
     p.hpost = a.hpost;

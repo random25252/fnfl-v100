@@ -4405,6 +4405,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--fnfl-hmix-route"}, "peer|host",
+        "FNFL: how each card sends its half of the mixed row (X-HMIX) to the other: peer writes straight into the "
+        "other card's memory; host writes pinned host memory, from which a small kernel on the receiving card lands "
+        "it once. host helps on platforms whose GPU-to-GPU writes collapse under load (docs/fnfl/decode-headroom.md); "
+        "two devices only. Outputs are bitwise the same (default: peer)",
+        [](common_params & params, const std::string & value) {
+            if (value != "peer" && value != "host") {
+                throw std::invalid_argument("--fnfl-hmix-route is peer or host");
+            }
+            params.fnfl.hmix_route = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--fnfl-hc-packed"}, "on|off",
+        "FNFL: send each HC block's moments (X-HC) to the other card as one contiguous run instead of a short run a "
+        "row, so the link sees fewer, larger writes (docs/fnfl/decode-headroom.md). Outputs are bitwise the same "
+        "(default: off)",
+        [](common_params & params, const std::string & value) {
+            if (value != "on" && value != "off") {
+                throw std::invalid_argument("--fnfl-hc-packed is on or off");
+            }
+            params.fnfl.hc_packed = value == "on";
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--fnfl-check-state"},
         "FNFL TEST (SV1): after every engine call, compare the engine's tokens with the slot's; fail the request on a mismatch",
         [](common_params & params) { params.fnfl.check_state = true; }

@@ -449,6 +449,8 @@ struct common_params_fnfl {
     // box runs read units only before the latest start that keeps every writer group's next step within P ms
     int32_t              writer_pause_ms = 100;
     std::string          draft_attention;        // SP2's switch: dense or sparse; empty: dense
+    std::string          hmix_route;             // --fnfl-hmix-route peer|host; empty: peer
+    bool                 hc_packed      = false; // --fnfl-hc-packed on|off
     bool                 check_state    = false; // TEST: compare the engine's tokens with the slot's after every call
     std::vector<int32_t> test_eog;               // TEST: more end-of-generation IDs
     int32_t              test_fail_step = 0;     // TEST: step K of the next request fails once (0: off)

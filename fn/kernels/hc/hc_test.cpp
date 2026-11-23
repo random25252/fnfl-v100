@@ -828,6 +828,38 @@ fn::hc::sub_args sub_args_of(card2 & k, fn::xchg::rings & rg, int32_t r, int32_t
     return a;
 }
 
+// --fnfl-hc-packed: copy a card's own moments (B rows) out of its X-HC slot's own region into the lone layout (rows of
+// M words) on the stream: as is, or from the joint layout (xchg.h hcj_run_at) with 2-D copies, one a down block's run
+// (two for the block holding u rows and q rows) and one for the v words
+bool copy_own_moments(float * dst, const float * region, int32_t B, bool packed, cudaStream_t st) {
+    constexpr size_t W = sizeof(float);
+    if (!packed) {
+        return cuda_ok(cudaMemcpyAsync(dst, region, static_cast<size_t>(B) * M * W, cudaMemcpyDeviceToDevice, st),
+                       "own moments");
+    }
+    constexpr int32_t n_u = 320, rb = fn::xchg::hcj_rows_block;
+    bool ok = cuda_ok(cudaMemcpy2DAsync(dst, M * W, region, 4 * W, 4 * W, static_cast<size_t>(B),
+                                        cudaMemcpyDeviceToDevice, st),
+                      "own v words");
+    for (int32_t vb = 0; vb < fn::xchg::hcj_blocks && ok; ++vb) {
+        const int32_t s = vb % 4, j0 = (vb / 4) * rb;
+        const int32_t nu = j0 >= n_u ? 0 : std::min(rb, n_u - j0); // the run's u rows, then its q rows
+        const float * src = region + fn::xchg::hcj_run_at(vb, 0);
+        if (nu > 0) {
+            ok = cuda_ok(cudaMemcpy2DAsync(dst + 4 + n_u * s + j0, M * W, src, rb * W, static_cast<size_t>(nu) * W,
+                                           static_cast<size_t>(B), cudaMemcpyDeviceToDevice, st),
+                         "own u run");
+        }
+        if (ok && nu < rb) {
+            ok = cuda_ok(cudaMemcpy2DAsync(dst + 4 + 4 * n_u + 4 * s + (j0 + nu - n_u), M * W, src + nu, rb * W,
+                                           static_cast<size_t>(rb - nu) * W, static_cast<size_t>(B),
+                                           cudaMemcpyDeviceToDevice, st),
+                         "own q run");
+        }
+    }
+    return ok;
+}
+
 // Runs n_sub sublayers of one arm on both cards and checks every sublayer against the HC1c reference bits and the
 // first against the FP64 reference; HC3: both forms of mixed, the codes and scales bitwise act_ref of the full F32 row
 // on both cards (C2's quantize of HC2's row, which act-test holds bitwise to act_ref), and down2's X-HMIX resets.
@@ -847,7 +879,8 @@ bool run_hc2_case(card2 *             c[2],
                   pair_out *          keep  = nullptr,
                   bool                q8    = false,
                   bool                fused = false,
-                  bool                mix   = false) {
+                  bool                mix   = false,
+                  bool                packed = false) {
     using fn::xchg::msg;
     const int32_t B = in.rows;
     bool ok = rg.reset_all() && put_inputs(c, in);
@@ -865,8 +898,9 @@ bool run_hc2_case(card2 *             c[2],
         const int32_t sl = n % fn::xchg::n_slot;
         for (const int32_t mode : {loopback ? 1 : 3, loopback ? 2 : 0}) {
             for (int32_t r = 0; r < 2 && ok && mode != 0; ++r) {
-                ok = cuda_ok(cudaSetDevice(c[r]->dev), "cudaSetDevice") &&
-                     fn::hc::sub(B, mode, sub_args_of(*c[r], rg, r, n, false), launch_stream(c, r));
+                fn::hc::sub_args sa = sub_args_of(*c[r], rg, r, n, false);
+                sa.hc_packed = packed ? 1 : 0; // --fnfl-hc-packed
+                ok = cuda_ok(cudaSetDevice(c[r]->dev), "cudaSetDevice") && fn::hc::sub(B, mode, sa, launch_stream(c, r));
             }
         }
         for (int32_t r = 0; r < 2 && ok; ++r) {
@@ -879,10 +913,8 @@ bool run_hc2_case(card2 *             c[2],
                                            r,
                                            0};
             ok = cuda_ok(cudaSetDevice(k.dev), "cudaSetDevice") &&
-                 cuda_ok(cudaMemcpyAsync(k.mom.p + n * card2::n_m, rg.slot(r, msg::hc, sl) + fn::xchg::hc_own_at,
-                                         static_cast<size_t>(B) * M * sizeof(float), cudaMemcpyDeviceToDevice,
-                                         launch_stream(c, r)),
-                         "own moments") &&
+                 copy_own_moments(k.mom.p + n * card2::n_m, rg.slot(r, msg::hc, sl) + fn::xchg::hc_own_at, B, packed,
+                                  launch_stream(c, r)) &&
                  fn::hc::ready(B, ra, launch_stream(c, r));
         }
         if (!ok) {
@@ -1084,11 +1116,13 @@ bool batch_invariance(card2 *                c[2],
     if (!q8) {
         variants.push_back(1);
         variants.push_back(2);
+        variants.push_back(3); // --fnfl-hc-packed: the one-launch sublayer with X-HC packed
     }
     for (const int32_t var : variants) {
         const fn::hc::up_arm arm = var == 1 ? fn::hc::up_arm::staged : fn::hc::up_arm::ring;
-        const bool fused = var == 2;
-        const std::string name = var == 0 ? "arm0" : var == 1 ? "armA" : "fused";
+        const bool fused = var >= 2;
+        const bool packed = var == 3;
+        const std::string name = var == 0 ? "arm0" : var == 1 ? "armA" : var == 2 ? "fused" : "fused-packed";
         pair_out o4;
         reference ref4;
         make_reference(w, in4, ref4);
@@ -1096,7 +1130,7 @@ bool batch_invariance(card2 *                c[2],
         ok = ok && cuda_ok(cudaSetDevice(dev0), "cudaSetDevice") &&
              (q8 || in4.rows > fn::hc::hc1_max_rows || run_gpu(dw, in4, bits4, st, candidates[0])) &&
              run_hc2_case(c, rg, in4, ref4, q8 || in4.rows > fn::hc::hc1_max_rows ? nullptr : &bits4, arm,
-                          pre + std::to_string(in4.rows) + " " + name, &o4, q8, fused, mix);
+                          pre + std::to_string(in4.rows) + " " + name, &o4, q8, fused, mix, packed);
         for (int32_t B = 1; B < fn::hc::max_rows && ok; ++B) {
             inputs in;
             in.rows = B;
@@ -1109,7 +1143,7 @@ bool batch_invariance(card2 *                c[2],
             pair_out o;
             ok = cuda_ok(cudaSetDevice(dev0), "cudaSetDevice") && (q8 || run_gpu(dw, in, bits, st, candidates[0])) &&
                  run_hc2_case(c, rg, in, ref, q8 ? nullptr : &bits, arm, pre + std::to_string(B) + " " + name, &o, q8,
-                              fused, mix);
+                              fused, mix, packed);
             for (int32_t r = 0; r < 2 && ok; ++r) {
                 const auto prefix = [](const auto & a, const auto & b) {
                     return a.size() <= b.size() && std::equal(a.begin(), a.end(), b.begin(), [](auto u, auto v) {
@@ -1130,7 +1164,7 @@ bool batch_invariance(card2 *                c[2],
         mix ? "hc2 mix" :
         q8  ? "hc2 q8" :
               "hc2",
-        fn::hc::max_rows - 1, fn::hc::max_rows, q8 ? "arm 0" : "both arms and the fused launch", n_same, n_cmp,
+        fn::hc::max_rows - 1, fn::hc::max_rows, q8 ? "arm 0" : "both arms and the fused launch, lone and packed", n_same, n_cmp,
         ok && n_same == n_cmp ? "" : "  FAIL");
     return ok && n_same == n_cmp;
 }
@@ -2757,6 +2791,10 @@ int fnfl_hc2_test(int dev0, int dev1, uint32_t rows_mask) {
                 ok = ok && run_hc2_case(c, rg, in, ref, hc1 ? &bits : nullptr, fn::hc::up_arm::ring,
                                         std::string("hc2 fused ") + kind_name(kd) + " B" + std::to_string(rows),
                                         nullptr, false, true);
+                // --fnfl-hc-packed: the same launch with X-HC in the joint layout, against the same bits
+                ok = ok && run_hc2_case(c, rg, in, ref, hc1 ? &bits : nullptr, fn::hc::up_arm::ring,
+                                        std::string("hc2 fused-packed ") + kind_name(kd) + " B" + std::to_string(rows),
+                                        nullptr, false, true, false, true);
             }
         }
         if (ok && (rows_mask >> (fn::hc::max_rows - 1) & 1u) != 0) {
