@@ -110,6 +110,45 @@ edits, roughly 220–260 tok/s (+20–40%) once lookup drafts land, because thos
 edit-heavy replay, not only on `bench.py`, which has no edits. Ruled out: fine-tuning the MTP head, and multi-user
 batching on this box.
 
+## The hardware floor and the path to a realistic maximum (2026-11-24, estimates)
+
+**The floor.** Decode is bound by memory and latency, not compute, and draws well below GPU 0's 250 W cap. A verify
+step at 3 proposals (4 rows) reads on each card:
+- the dense weights, ~2.15 GB;
+- the touched experts' halves, ~1.2–1.5 GB (4 rows × 10 experts × 48 layers);
+- GDN states, KV and the rest, ~0.3–0.5 GB.
+
+That is ~3.7–4 GB, **~4 ms at ~1,020 GB/s**, against ~15.5 ms measured (183 tok/s at 2.84 tokens a step). So decode
+uses ~25–30% of the memory bandwidth. Prefill, by comparison, reaches ~50% of what a well-built engine could do
+(`prefill-headroom.md`).
+
+**A realistic floor for a well-built engine is ~8 ms a step, not 4:**
+- small-batch kernels rarely sustain more than ~75–80% of HBM bandwidth;
+- ~200 card-to-card synchronizations a step cost ≥0.5–1 ms of PCIe latency even when overlapped;
+- the draft chain stays at ~1 ms even when fused.
+
+**The realistic maximum:** ~300–350 tok/s on general text, and ~450–500+ on code and edit-heavy agent turns with
+bigger drafts. The fastest published two-card numbers for this model are QEngine's 201–248 tok/s (2× RTX 3090) and
+sFNX's ~140–160 on new code.
+
+**The path, in order** (speed = tokens a step ÷ step time):
+
+| Phase | What | Lever | Expected after it | Effort |
+|---|---|---|---|---|
+| 0. Measure | Nsight Systems on a decode step with node-level graph tracing, plus the wait counters: each kernel's time and bandwidth efficiency, idle gaps, draft against verify. Today there is only "~90% is the work" | — | a map of the ~11 ms above the floor | 1–2 days |
+| 1. Cheap acceptance | Lookup drafts within the 4-proposal limit; adaptive draft depth (shortlist items 1–2) | tokens a step | ~190–200 general; ~230–260 on edits | 1–2 weeks |
+| 2. Exchanges | The host route and packing for every exchange, chosen at startup by timing real steps; fewer, larger X-HC writes (shortlist item 3, ideas 1–2) | step −0.8–1 ms | ~200–215 general | 1–2 weeks |
+| 3. Kernels to bandwidth | The 1–5-row expert and dense kernels toward ~70–80% of HBM bandwidth; each layer's small kernels fused; the draft step fused | step ~15 → ~10 ms | ~270–300 general; ~350+ on edits | 4–8 weeks; the core of it |
+| 4. Fewer sync points | Merge or overlap the per-sublayer hand-offs; persistent per-layer kernels that keep both cards in lockstep without launch gaps | step ~10 → ~8 ms | ~300–350 general | 4–8 weeks, risky |
+| 5. Bigger drafts | Verify windows past 5 rows (`max_rows` = 5 is baked into the exchange layouts) with DFlash2 or long lookup runs (shortlist items 4–5) | tokens a step on code 2.8 → 4–5 | ~450–500+ on code and edits | 1–2 months |
+
+**Skip: the layer split** (idea 6 below) for one user. Each card would run half the layers one after the other, which
+halves the usable memory bandwidth. It only pays if synchronization dominated, and phases 3–4 attack that more
+directly.
+
+**Start with phase 0**, which is cheap and turns phase 3's estimates into measurements. Then phase 1, the largest
+visible gain for the least work, especially in agent use.
+
 ## Ideas for later, ranked by expected payoff
 
 These rank the exchange and kernel work. For code-editing work, **n-gram drafting** (from sFNX, in the next section)

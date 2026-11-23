@@ -236,6 +236,8 @@ struct pt_kargs {
     int64_t ld16;
     uint32_t * err;
     uint32_t err_bit;
+    // --fnfl-dense-grouped (dense_prompt.h): pt_kernel's CTAs in groups of `group` row tiles (0: the launch's order)
+    int32_t group;
 };
 
 // a tile's outputs at (row, c0 .. c0 + 7 step 4: v[0], v[1] at c0, c0 + 1; v[2], v[3] at c0 + 4, c0 + 5): the segment,

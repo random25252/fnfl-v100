@@ -1,0 +1,66 @@
+// docs/iq3s-tools/tc/harness.cu.txt (docs/fnfl/prefill-headroom.md "The tensor-core core"): FNFL's prompt product core
+// against a scratch copy at the deployed dense shapes, timed and compared bitwise. Build: copy this to harness.cu and
+// tc_next.cuh.txt to tc_next.cuh in a scratch directory, then
+//   nvcc -O3 -arch=sm_70 -std=c++17 -I<repo> -o harness harness.cu; ./harness [0 orig|1 next|2 both] [0 F32 stores|1 none] [group]
+// harness: FNFL's prompt tensor-core core (fn/kernels/tc/tc_gemm.cuh) at the deployed dense shapes, against a variant
+// core (tc_next.cuh, a scratch copy under development): time (events, median of 20) and outputs bitwise
+#include "fn/kernels/tc/tc_gemm.cuh"
+#include "tc_next.cuh"
+#include <cstdio>
+#include <vector>
+#include <algorithm>
+#include <cstring>
+#include <cuda_fp16.h>
+__constant__ int g_mode;  // 0: F32 stores; 1: no stores (a checksum a thread, kept from elimination)
+struct epi_out { float * o; int32_t ld, n;
+  __device__ __forceinline__ void operator()(int32_t row, int32_t c0, const float (&v)[4]) const {
+    const int32_t cc[4] = { c0, c0 + 1, c0 + 4, c0 + 5 };
+    if (g_mode == 1) { if (v[0] + v[1] + v[2] + v[3] == 1234.5678f) o[0] = v[0]; return; }
+#pragma unroll
+    for (int i = 0; i < 4; ++i) if (cc[i] < n) o[int64_t(row) * ld + cc[i]] = v[i]; } };
+using shp = fn::tc::shape<128, 4, 4>;
+__global__ void __launch_bounds__(shp::threads, 2) k_orig(fn::tc::problem p, float * out) {
+  extern __shared__ uint4 sm[]; epi_out e{ out, p.n, p.n };
+  fn::tc::gemm_cta<128, 4, 4>(p, blockIdx.y * shp::rows, blockIdx.x * 128, reinterpret_cast<uint8_t *>(sm), e); }
+__constant__ int g_group;  // row tiles a group (the grouped CTA order); 0: the original order
+__global__ void __launch_bounds__(shp::threads, 2) k_next(fn::tc::problem p, float * out) {
+  extern __shared__ uint4 sm[]; epi_out e{ out, p.n, p.n };
+  int32_t tm = blockIdx.y, tn = blockIdx.x;
+  if (g_group > 0) {  // CTA id in launch order -> (row tile, column tile): groups of g_group row tiles, column-major in a group
+    const int32_t nm = gridDim.y, nn = gridDim.x, id = blockIdx.x + blockIdx.y * gridDim.x;
+    const int32_t per = g_group * nn, g = id / per, first = g * g_group, gs = min(nm - first, g_group);
+    tm = first + (id % per) % gs; tn = (id % per) / gs; }
+  tcn::gemm_cta<128, 4, 4>(p, tm * shp::rows, tn * 128, reinterpret_cast<uint8_t *>(sm), e); }
+int main(int argc, char ** argv) {
+  const int which = argc > 1 ? atoi(argv[1]) : 2;  // 0 orig only, 1 next only, 2 both
+  const int mode = argc > 2 ? atoi(argv[2]) : 0; cudaMemcpyToSymbol(g_mode, &mode, 4);
+  const int group = argc > 3 ? atoi(argv[3]) : 0; cudaMemcpyToSymbol(g_group, &group, 4);
+  struct S { int M, N, K; } sh[] = { {4096, 8192, 2560}, {4096, 6656, 2560}, {4096, 2560, 3072}, {4096, 640, 2560}, {4096, 2560, 320} };
+  for (auto s : sh) {
+    uint16_t *A, *W; float *o0, *o1;
+    cudaMalloc(&A, size_t(s.M) * s.K * 2); cudaMalloc(&W, size_t(s.N) * s.K * 2);
+    cudaMalloc(&o0, size_t(s.M) * s.N * 4); cudaMalloc(&o1, size_t(s.M) * s.N * 4);
+    std::vector<__half> h(std::max(size_t(s.M) * s.K, size_t(s.N) * s.K));
+    for (size_t i = 0; i < h.size(); ++i) h[i] = __float2half((((i * 2654435761u) >> 7) % 2001) / 1000.0f - 1.0f);
+    cudaMemcpy(A, h.data(), size_t(s.M) * s.K * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(W, h.data() + 17, size_t(s.N) * s.K * 2, cudaMemcpyHostToDevice);
+    fn::tc::problem p; p.a.a0 = A; p.a.ld0 = s.K; p.a.k_split = s.K; p.b = W; p.ldb = s.K; p.rows = s.M; p.n = s.N; p.k = s.K;
+    dim3 grid((s.N + 127) / 128, (s.M + shp::rows - 1) / shp::rows);
+    auto time = [&](auto kern, float * out, int smem) {
+      cudaFuncSetAttribute(kern, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+      cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1); std::vector<float> ms;
+      for (int i = 0; i < 23; ++i) { cudaEventRecord(e0); kern<<<grid, shp::threads, smem>>>(p, out); cudaEventRecord(e1); cudaEventSynchronize(e1);
+        float f; cudaEventElapsedTime(&f, e0, e1); if (i >= 3) ms.push_back(f); }
+      std::sort(ms.begin(), ms.end()); return ms[ms.size() / 2]; };
+    float t0 = 0, t1 = 0;
+    if (which != 1) t0 = time(k_orig, o0, shp::smem);
+    if (which != 0) t1 = time(k_next, o1, tcn::smem_bytes<128, 4, 4>());
+    const double fl = 2.0 * s.M * s.N * s.K;
+    bool same = false;
+    if (which == 2) { std::vector<float> a(size_t(s.M) * s.N), b(a.size()); cudaMemcpy(a.data(), o0, a.size() * 4, cudaMemcpyDeviceToHost);
+      cudaMemcpy(b.data(), o1, b.size() * 4, cudaMemcpyDeviceToHost); same = mode == 1 || std::memcmp(a.data(), b.data(), a.size() * 4) == 0; }
+    printf("M %d N %5d K %4d: orig %.3f ms (%.1f TFLOP/s)  next %.3f ms (%.1f TFLOP/s)  %s  err %s\n", s.M, s.N, s.K, t0, t0 > 0 ? fl / t0 / 1e9 : 0,
+           t1, t1 > 0 ? fl / t1 / 1e9 : 0, which == 2 ? (same ? "BITWISE" : "DIFFER") : "", cudaGetErrorString(cudaGetLastError()));
+    cudaFree(A); cudaFree(W); cudaFree(o0); cudaFree(o1);
+  }
+}

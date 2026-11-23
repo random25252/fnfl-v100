@@ -132,7 +132,9 @@ That run averaged 3.13 tokens a step, for 194.8 tokens/s. The step time barely m
 - **Failures:** a chunk that fails publishes nothing, so the slot's state stays consistent.
 
 [`prefill-headroom.md`](prefill-headroom.md) has the measured breakdown of a chunk's time, the hardware floor, the
-graph-route fix for short prompts and appends (`--fnfl-prompt-graphs off`), and the ranked ideas for more.
+fixes made on the development machine (`--fnfl-prompt-graphs off`, `--fnfl-hc-up-staged on`, `--fnfl-dense-grouped on`),
+the tensor-core and power measurements, and the path to a realistic maximum. [`decode-headroom.md`](decode-headroom.md)
+has decode's.
 
 ## Memory
 

@@ -42,13 +42,14 @@ cd ~/fnfl && ./build-fnfl/bin/llama-server --host 127.0.0.1 --port 8190 -np 1 --
   -md ~/fnfl-models/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
   --fnfl-draft-subset ~/fnfl/models/draft-vocab-qwen3.8-flash-next.txt \
   --fnfl-draft-attention sparse --fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on \
-  --fnfl-prompt-graphs off --fnfl-hc-up-staged on
+  --fnfl-prompt-graphs off --fnfl-hc-up-staged on --fnfl-dense-grouped on
 ```
 
 The `--fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on` flags are this machine's card-to-card workaround:
 183 tok/s, against 162 at the old default of `--fnfl-spec-d 2` without them (`docs/fnfl/decode-headroom.md`).
 `--fnfl-prompt-graphs off` makes prompts and appends of 65–512 tokens reach their first token 2–2.6× sooner, and
-`--fnfl-hc-up-staged on` makes prompts 3–4% faster, both with bitwise-identical outputs
+`--fnfl-hc-up-staged on` makes prompts 3–4% faster and `--fnfl-dense-grouped on` ~1% more, all with
+bitwise-identical outputs
 (`docs/fnfl/prefill-headroom.md`).
 
 The PLE table (27 GB, host RAM) is mlocked automatically, because `/etc/security/limits.d/90-fnfl.conf` gives

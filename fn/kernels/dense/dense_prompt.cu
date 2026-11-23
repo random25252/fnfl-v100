@@ -11,6 +11,7 @@
 #include <cfloat>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <type_traits>
 
 namespace fn::dense {
@@ -365,11 +366,22 @@ using pt_shape = fn::tc::shape<pt_bn, 4, 4>;
 constexpr int32_t pt_threads = pt_shape::threads;
 constexpr int32_t pt_smem    = pt_shape::smem;
 
+// --fnfl-dense-grouped: with k.group > 0 the CTAs take their tiles in groups of k.group row tiles, the column tiles
+// of a group in turn (CUTLASS's threadblock swizzle), so a wave of CTAs shares a few column slices of the weights
+// instead of streaming all of them once for every two row tiles (the 8,192 x 2,560 GDN product: L2 hit 58% -> 89%).
+// Only which CTA computes which tile changes, not a tile's products: bitwise the same
 __global__ void __launch_bounds__(pt_threads, 2) pt_kernel(const pt_kargs k) {
     extern __shared__ uint4 pt_sm[];
     const auto epi = [&](int32_t row, int32_t c0, const float (&v)[4]) { pt_epi(k, row, c0, v); };
-    fn::tc::gemm_cta<pt_bn, 4, 4>(k.p, static_cast<int32_t>(blockIdx.y) * pt_shape::rows,
-                                  static_cast<int32_t>(blockIdx.x) * pt_bn, reinterpret_cast<uint8_t *>(pt_sm), epi);
+    int32_t    tm = static_cast<int32_t>(blockIdx.y), tn = static_cast<int32_t>(blockIdx.x);
+    if (k.group > 0) {
+        const int32_t nm = static_cast<int32_t>(gridDim.y), nn = static_cast<int32_t>(gridDim.x);
+        const int32_t id  = tn + tm * nn;
+        const int32_t per = k.group * nn, first = id / per * k.group, gs = min(nm - first, k.group);
+        tm                = first + id % per % gs;
+        tn                = id % per / gs;
+    }
+    fn::tc::gemm_cta<pt_bn, 4, 4>(k.p, tm * pt_shape::rows, tn * pt_bn, reinterpret_cast<uint8_t *>(pt_sm), epi);
 }
 
 // MUP1 piece 2: a small read's tile, 64 x 64 of four warps (each 32 x 32), for at most 64 rows: a 64-row read's
@@ -1165,6 +1177,27 @@ bool pt_make(const pt_args & a, bool need_w, void * stream, pt_kargs & k) {
 
 }  // namespace
 
+namespace {
+std::atomic<int32_t> g_grouped{ -1 };  // -1: unset (FNFL_DENSE_GROUPED decides on first use)
+}  // namespace
+
+void set_dense_grouped(bool on) {
+    g_grouped.store(on ? 1 : 0);
+}
+
+bool dense_grouped() {
+    int32_t cur = g_grouped.load(std::memory_order_relaxed);
+    if (cur < 0) {
+        const char *  e    = std::getenv("FNFL_DENSE_GROUPED");
+        const int32_t want = e != nullptr && e[0] == '1' ? 1 : 0;
+        if (g_grouped.compare_exchange_strong(cur, want) && want == 1) {
+            std::fprintf(stderr, "fn::dense: grouped CTA order on (FNFL_DENSE_GROUPED=1)\n");
+        }
+        cur = g_grouped.load();
+    }
+    return cur == 1;
+}
+
 bool pd_tc(const pt_args & a, void * stream) {
     pt_kargs k = {};
     if (!pt_make(a, true, stream, k)) {
@@ -1176,6 +1209,7 @@ bool pd_tc(const pt_args & a, void * stream) {
         return cudaPeekAtLastError() == cudaSuccess;
     }
     const dim3 grid((a.n + pt_bn - 1) / pt_bn, (a.rows + pt_shape::rows - 1) / pt_shape::rows);
+    k.group = dense_grouped() ? pt_group_rows : 0;
     pt_kernel<<<grid, pt_threads, pt_smem, static_cast<cudaStream_t>(stream)>>>(k);
     return cudaPeekAtLastError() == cudaSuccess;
 }

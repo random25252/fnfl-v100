@@ -243,6 +243,207 @@ The cards wait on each other, so this costs ~2–4% on long prompts. In shorter 
 70–74 °C core and 72–77 °C HBM, with only short `0x4` bursts. **Neither the power cap nor the copy engine is what
 limits long prompts; kernel efficiency is.**
 
+## Scoping: splitting HC across the cards (2026-11-23)
+
+**Today.** Each card computes every HC sublayer in full for every prompt row (the replicated form, FC-PF3). That is
+`hct_split`, `hct_down`, `hct_mid` and `hct_up` over all 2,560 features: ~2.1 ms a 4,096-row half (bench; more in
+production, where `hct_split` also folds the previous exchange in). That is ~400 ms of a ~2.2 s chunk on each card, and
+half of it is the other card's work done twice.
+
+**What the sublayer body needs.** The full mixed row (FP16 `[rows][2560]`, `a.mixed16`) on both cards: the QKV, GDN
+and router products take K = 2,560. So a split must exchange mixed halves either way. The draft's catch-up already
+does this (the split form: `pkind::mom`, then `pkind::dmix`, the mixed half), so the protocol has a template.
+
+**Two stages:**
+
+| | A: split the up product only | B: the full split (decode's form) |
+|---|---|---|
+| Work | each card computes `hct_up` for its 1,280 features; the halves cross as FP16 (2.5 KB a row, 10.5 MB a 4,096-row half), like DMIX | streams held as halves; `hct_split`, `hct_down` over 1,280 features; F32 moments cross (5.2 KB a row) before `hct_mid`; mixed halves cross; the sublayer outputs reduce-scatter (half their bytes) |
+| Saves a chunk | ~100 ms (`hct_up` ~1.07 → ~0.53 ms × 192 half-sublayers): **~4.5%** | ~+125 ms more (down, split and combine halved): ~6% more |
+| Copy-engine load | +2 GB a chunk a card: ~0.7 → ~1.0 s of a ~2.1 s chunk, still below the compute | ~8 GB a chunk, ~1.3 s at 6.2 GB/s: close to the compute time; the moments sit on a tight critical path (down → copy → mid → up) |
+| Numerics | **bitwise**: each mixed value is computed as now on the card that owns it, and copied exactly | sums in card order (as decode does), not bitwise; checked against the numerical contract |
+| Memory a card | ~+60–85 MB (a mixed buffer and a receive slot a piece); 0.47 GiB is free at 147,456 cells | similar |
+| Effort | ~1–2 days | 1–2 weeks |
+
+**The catch for A: two halves cannot hide both exchanges.**
+- Per piece and sublayer the chain becomes HC → mixed copy → body → output copy → the next HC.
+- With two halves interleaved, every copy needs other work between its producer and its consumer. Only two of the four
+  gaps a sublayer can hold a body; the other two hold only an HC step.
+- The output copy (21 MB a 4,096-row half, ~3.1 ms at the measured ~6.2 GB/s) then sits behind an HC step (~1.9 ms after
+  the split). That stalls ~1.2 ms a sublayer, ~115 ms a chunk, about what A saves.
+- **Three pieces a chunk** (MUP2's `prompt_set_pieces`) give every gap enough work: H_A H_B H_C B_A B_B B_C.
+- But each piece re-reads the touched experts' weights (+~25 ms a chunk for a third piece), so **A nets ~+3%** for ~2–3
+  days of reordering `chunk_layers` (`fn/model/prompt.cpp`).
+- The graph route and pieces of ≤ `hct_small_rows` would stay replicated.
+
+**Instead, first: `hct_up` toward its floor on one card (tried 2026-11-23, little left).**
+- Nsight Compute on the staged kernel (2,048 rows): the epilogue holds ~54% of the stall samples and the k loop ~31%.
+  The issue rate is 42%, with 0.77 eligible warps a scheduler.
+- Unrolling the epilogue's row loop (2, 4 or 8 rows a warp in flight) changed nothing at 4,096 rows (2.065–2.077 ms
+  against 2.065). The warps already hide each other's latency.
+- The kernel is near an instruction floor: ~179M warp instructions at 4,096 rows is ≥0.45 ms of issue alone.
+  - 45% are in the k loop: the 32 × 32 warp tiles' address, load and store work for each tensor op.
+  - ~31% are in the epilogue: four precise `expf` sigmoids and IEEE divisions an output, which the bitwise contract
+    fixes.
+- Going below ~1.1 ms needs a better tensor-core product core (larger warp tiles with the staged epilogue in less
+  shared memory, or fewer instructions a tensor op). That is the same work the dense and expert products need (item 3
+  below), not a quick HC fix.
+
+## The tensor-core core: how far from the ceiling (2026-11-23)
+
+**The ceiling, measured.** cuBLAS (`cublasGemmEx`, FP16 in, FP32 accumulate, best of the tensor-op algorithms) on the
+deployed shapes at a 4,096-row half (`docs/iq3s-tools/tc/cublas_ceil.cu.txt`; FNFL's times from the 8K-chunk trace):
+
+| Product (N × K) | cuBLAS | FNFL | FNFL slower by |
+|---|---|---|---|
+| GDN QKV + gate (8192 × 2560) | 2.24 ms (77 TFLOP/s) | 3.29 ms (52) | 1.47× |
+| QSA Q + K + V (6656 × 2560) | 1.82 ms (77) | 2.83 ms (49) | 1.55× |
+| Outputs (2560 × 3072) | 0.87 ms (74) | — | — |
+| Shared gate + up (640 × 2560) | 0.29 ms (47) | 0.41 ms | 1.45× |
+| HC up, the product only (10240 × 320) | 0.49 ms (55) | 1.17 ms with its epilogue (staged) | — |
+| HC down, 4 streams (320 × 2560) | 0.50 ms (54) | 0.60 ms | 1.21× |
+| Experts gate + up, 80 rows × 512 experts | 6.85 ms (20) | **3.16 ms** | FNFL faster |
+| Experts down, 80 rows × 512 experts | 2.24 ms (30) | **1.87 ms** | FNFL faster |
+
+The experts are faster in FNFL: cuBLAS has to read FP16 weights (1.7 GB a call), and FNFL decodes the 2–4-bit codes
+in its tile loader. **The gap is in the dense products.**
+
+**Why the dense gap: the same tile, a worse loop.** cuBLAS runs CUTLASS's `s884gemm_f16_128x128_tn`. That is the same
+configuration as FNFL's `pt_kernel`: 128 × 128, four 64 × 64 warps, ~240 registers, 32 KB shared. Nsight Compute on
+the GDN shape (`docs/iq3s-tools/tc/harness.cu.txt`, the engine's core in a standalone harness):
+
+| | FNFL, launch order | FNFL, grouped order | cuBLAS |
+|---|---|---|---|
+| Time | 3.83 ms | 2.77 ms | 2.34 ms |
+| Tensor pipe busy | 50% | 69% | 81% |
+| L2 hit rate | 58% | 89% | 89% |
+| Long-scoreboard stall a issue | 1.11 | — | 0.20 |
+| Warp instructions | 515M | — | 428M |
+
+- **The L2 part is fixed: `--fnfl-dense-grouped on`.**
+  - The CTAs take their tiles in groups of 8 row tiles (CUTLASS's threadblock swizzle), so a wave shares the weights'
+    column slices instead of streaming all 42 MB again every two row tiles.
+  - Only the tile-to-CTA assignment changes: bitwise the same.
+  - In the harness: GDN 4.28 → 3.18 ms, QSA 3.23 → 2.61 ms (F32 epilogue), small N unchanged.
+  - Code: `pt_kernel` in `fn/kernels/dense/dense_prompt.cu`, `pt_kargs::group`; the switch is `set_dense_grouped`,
+    environment `FNFL_DENSE_GROUPED=1`.
+- **What is left is the loop.** FNFL's k loop issues ~20% more instructions. Its hottest stalls are address arithmetic.
+  Unrolling it by two spills (the 64 × 64 warp tile is at 246 registers) and is slower. Closing the rest to CUTLASS's
+  81% means rewriting the k loop's scheduling within the same register budget: weeks, uncertain. The alternatives
+  would be cuBLAS or CUTLASS as a dependency (sums in another order, so not bitwise).
+
+**In the server** (`ttft_bench.py`, medians of 3, `--fnfl-hc-up-staged on` in both arms):
+
+| Prompt | Launch order | Grouped |
+|---|---|---|
+| 2,048 tokens | 0.671 s | 0.664 s |
+| 8,192 | 2.205 s | 2.180 s (−1.1%) |
+| 32,768 | 8.427 s | 8.341 s (−1.0%; 3,888 → 3,928 tok/s) |
+
+- Greedy outputs of 12 frozen prompts were bitwise identical across three binaries: the production build (`10d5590`),
+  and the new build with the switch off and on. `pd-test` passes all 173 checks either way.
+- The test prompts are now frozen in `gencmp-toks.json`. An earlier "difference" came from tokenizing docs that had
+  been edited between runs.
+
+**Why only ~1% in the server, and the ceiling behind it: GPU 0's power.** During busy prompt time (samples at ≥90%
+utilization):
+- **GPU 0** draws 223–225 W on average, against **GPU 1**'s 195 W for the same work. It is at the 250 W cap 32–38% of
+  that time and below 1,380 MHz 82% of it, averaging 1,357 MHz. GPU 1 never leaves 1,380 MHz.
+- 250 W is the card's hard maximum (`nvidia-smi -q -d POWER`: limits 100–250 W), so it can't be raised.
+- The cards wait on each other, so GPU 0 sets the pace. Every efficiency gain raises its power and loses part of the
+  gain to clock. The cuBLAS bench peaked at 274 W and dropped to 1,207 MHz.
+- **So kernel speedups are partly capped by GPU 0's power.** Why GPU 0 draws ~30 W more is **not established**. Two
+  explanations fit:
+  - leakage rising with temperature (it runs 4–7 °C hotter): this would show as power capping (`0x4`), not as thermal
+    throttling, which barely occurs;
+  - plain chip-to-chip variation (V100 dies differ in leakage and voltage).
+
+  GPU 0 also often sits at 1,327–1,357 MHz with no reason flagged, GPU Boost's temperature-dependent clock steps. The
+  test to settle it is in the list below.
+- If it is leakage, cooler air on GPU 0 is the one hardware knob left. The fans already follow its wattage through
+  `/home/dom/scripts/gpu_watt_temp.sh` and CoolerControl, so a steeper curve may buy back clock under the cap. Measure
+  GPU 0's power and clock at the same load before and after.
+
+**Revised outlook for this direction:**
+- The grouped order (done, +1%).
+- A CUTLASS-class k loop for the dense products: perhaps +3–4% more at most once GPU 0's power is counted. A rewrite of
+  weeks, or a library dependency.
+- The HC up product on such a core: ~+2%.
+- **That is not the +10–20% estimated before measuring.** It overstated the dense gap: cuBLAS is ~1.5× FNFL, not 2×.
+  It assumed the experts had headroom, which they don't against cuBLAS. And it ignored the power cap.
+
+## Prefix caching beyond the slot: the sizing (2026-11-23, not built)
+
+For everyday use this is probably the biggest TTFT lever left. Every fresh-prompt item above is worth a few percent;
+a cache hit turns seconds into a fraction of one.
+
+**Today.** One slot keeps its conversation and up to eight checkpoints: the recurrent state at multiples of 8,192 and
+at each prompt's end. A follow-up turn in the same conversation already reads only its new tokens. What is not kept:
+- a conversation the server has switched away from;
+- a long context sent again after something else ran in between;
+- an edited system prompt or early message, read again from the last checkpoint before the change, or from token 0.
+
+At ~3,800 tok/s that costs ~8.6 s for 32K tokens and ~35 s for 131K.
+
+**What a parked conversation weighs** (`engine.md` "Memory"):
+- **Keys and values:** about 10 KB a context token a card with the default 8-bit KV. 32K tokens are ~0.65 GB over both
+  cards, 131K ~2.6 GB.
+- **Recurrent state** (what a checkpoint copies): the 36 GDN layers' states (24 heads a card × 128 × 128 F32, ~56 MB a
+  card), the convolution and PLE histories and the draft's carry. Roughly 0.1–0.15 GB a conversation, whatever its
+  length.
+
+**Restoring vs recomputing:**
+- From pinned host RAM at the measured ~10–11 GB/s a card, both cards in parallel, a 32K conversation comes back in
+  ~0.04–0.1 s, against ~8.6 s to recompute. A 131K one takes ~0.15–0.3 s against ~35 s.
+- Pageable memory is slower but still far under a second.
+
+**Budget:** 62 GB of RAM, of which the PLE table locks 27 GB. ~20–25 GB is left for a host archive: about 25–30
+conversations of 32K, or 6–8 of 131K. NVMe could be a second tier (ReVolta: a 32K document back from disk in 1.5 s).
+
+**Ways in, cheapest first:**
+1. **sFNX-style checkpoints at message boundaries** (and every 4,096 tokens of a long first message) instead of only
+   at multiples of 8,192. An edited late message is then re-read from the nearest boundary. Small: the checkpoint
+   machinery exists (`fn/runtime/prefill.h`); only where the checkpoints are taken changes. It helps edits within one
+   conversation, not switching.
+2. **Park a slot's KV and state in host RAM** when another conversation takes the slot, keyed on the token-prefix hash
+   the checkpoints already use (`token_key`). Restore on a match. Medium–large:
+   - the KV pool and slot ledger have to accept a restored prefix;
+   - the copies have to be ordered with the copy streams;
+   - eviction is least recently used first.
+3. **A second tier on NVMe** for restarts and overflow. Large.
+
+**Before building:**
+- Log real usage to see how often requests switch conversations or re-send long prefixes. The server log's
+  `FNFL prefill: from token … (N kept by the shell …)` lines show what was reused.
+- Measure the actual KV and state bytes a conversation holds in this build.
+
+## The realistic maximum with code changes, and the path (2026-11-24, estimates)
+
+Per 8,192-token chunk (today ~2.08 s, ~3,930 tok/s with all the switches):
+
+| Ceiling | Chunk time | tok/s | Assumes |
+|---|---|---|---|
+| FP16 peak (~58 TFLOP a card at ~102 TFLOP/s) | 0.57 s | ~14,000 | every unit busy all the time: not reachable |
+| A well-built engine on these cards | ~1.0–1.2 s | ~7,000–8,000 | GEMMs at cuBLAS-class efficiency, HC split, the memory-bound kernels at bandwidth |
+| The same under GPU 0's 250 W cap | ~1.3–1.5 s | **~5,500–6,500** | efficient kernels draw more power; part of each gain turns into clock |
+
+Where the gap is, and what closes it, largest first:
+
+| Area | Now | Could be | Approach | Effort |
+|---|---|---|---|---|
+| HC | ~400 ms | ~150 ms | split across the cards (three pieces), its four kernels fused into two, both products on a better core | 2–3 weeks |
+| Experts | ~525 ms | ~320 ms | rows grouped by expert over the whole chunk rather than each half (twice the rows an expert, the weights read once); a better tile loop that keeps the in-loader decode | 2–3 weeks |
+| Dense | ~520 ms | ~350 ms | a CUTLASS-class k loop (~80% tensor-busy against ~55–69%), or CUTLASS or cuBLAS as a dependency (not bitwise) | 2–4 weeks, shared with the two above |
+| QSA attention | ~166 ms | ~100 ms | a flash-attention-style kernel (the V100 ports in the survey) | 1–2 weeks |
+| GDN | ~144 ms | ~90 ms | the FlashQLA chunked kernels | 1–2 weeks |
+| Idle and small kernels | ~150 ms | ~50 ms | QSA indexer balance, PLE products on tensor cores, `ep_group` as a real grid | days each |
+
+The largest single lever is **one shared high-efficiency tensor-core core with pluggable weight loaders** (FP16, BF16
+and the quantized formats) **and fused epilogues**, used by dense, HC and the experts alike. It is most of the gain and
+the least certain part: the cheap attempt (unrolling the current loop) ran out of registers. Altogether this is
+~1.5× today, for weeks to months of kernel work. Prefix caching (above) makes a re-read of cached context near-instant
+for a fraction of that.
+
 ## What is left, ranked by gain against effort
 
 Estimates, not measured. Long-prompt rate today ~3,720–3,900 tok/s with `--fnfl-hc-up-staged on`; the target is 4,000,
@@ -250,12 +451,23 @@ and 5,000+ would need the first three items.
 
 | # | Idea | Expected gain | Effort |
 |---|---|---|---|
-| 1 | **HC prompt kernels, the rest.** `hct_up`'s staged epilogue is done (+3–4%, above). Left: `hct_up`'s operand traffic and occupancy (1.17 ms against a ~0.4 ms floor at 4,096 rows), `hct_down` (47% tensor-busy, register-limited), and fusing `hct_split` (memory-bound at ~820 GB/s) into its neighbours to cut bytes | maybe +3–5% more | days each, uncertain; bitwise where only data movement changes |
+| 1 | **HC prompt kernels, the rest.** `hct_up`'s staged epilogue is done (+3–4%, above); unrolling its epilogue gained nothing, and it is near an instruction floor without a new product core (see the scoping above). Left: `hct_down` (47% tensor-busy, register-limited) and fusing `hct_split` (memory-bound at ~820 GB/s) into its neighbours to cut bytes | maybe +1–3% | days each, uncertain |
+| 1b | **Split HC's up product across the cards, in three pieces a chunk** (scoping above; two halves cannot hide the extra exchange) | ~+3% | ~2–3 days; bitwise |
+| 1c | **`ep_group` as one block** (a grid of one CTA, ~14 ms a chunk) | ~+0.5% | small |
 | 2 | **Split HC across the cards** instead of replicating it, its moments exchanged by the copy engines | another ~+5–10% | 1–2 weeks; sums in another order, so the numerical contract, not bitwise |
-| 3 | **Expert and dense GEMMs** (~37 and ~44 TFLOP/s): better Volta tiles, experts grouped over the whole chunk rather than each half, faster decode in the loader | +10–20% | weeks, uncertain; run Nsight Compute on `ep_gate_up`, `pt_kernel` and `hct_up` first (half a day) |
+| 3 | **A CUTLASS-class k loop for the dense products** (measured: cuBLAS 1.5× FNFL on the big shapes; the L2 part done, `--fnfl-dense-grouped on`, +1%). The experts already beat cuBLAS; grouping them over the whole chunk (rows an expert ×2) is a separate idea | +3–5% at most, capped by GPU 0's power (section above) | weeks, or cuBLAS/CUTLASS as a dependency (not bitwise) |
 | 4 | **QSA card balance** (the indexer's card alternates; the other waits 3–8 ms a QSA layer) | +2–4% | days |
-| 5 | **Prefix caching beyond the slot** ([ReVolta](https://github.com/Leonccaa/ReVolta), [QEngine](https://github.com/bpx03/QEngine), [sFNX](https://github.com/johnfink8/sfnx)'s message-boundary checkpoints, then host parking) | repeated or switched-back context: seconds → well under a second; nothing for fresh prompts | medium–large; ~20–25 GB of host RAM is free beside the locked PLE table |
+| 5 | **Prefix caching beyond the slot** (sizing in its own section above; [ReVolta](https://github.com/Leonccaa/ReVolta), [QEngine](https://github.com/bpx03/QEngine), [sFNX](https://github.com/johnfink8/sfnx)'s message-boundary checkpoints, then host parking) | repeated or switched-back context: seconds → well under a second; nothing for fresh prompts | medium–large; ~20–25 GB of host RAM is free beside the locked PLE table |
 | 6 | **Tiny prompts' fixed costs** (FP16 weight conversions every chunk, ~18 ms; both halves re-reading the experts) | 20–30 ms of a ~0.1 s TTFT | small–medium |
+
+**To eliminate soon: why GPU 0 draws ~30 W more than GPU 1.** Run the same fixed GEMM load on each card cold (~35 °C),
+then warmed (~70 °C), and log power and clock (`gpumon.sh`; `docs/iq3s-tools/tc/cublas_ceil.cu.txt` makes a steady
+load).
+- GPU 0's power rising clearly with temperature at the same clock means leakage, and cooling GPU 0 would buy clock
+  under the cap.
+- GPU 0 drawing more even when both are cold means it's the chip, and cooling helps little.
+
+~10 minutes.
 
 Ruled out or small:
 - the copy-engine exchange and the power cap as the long-prompt limit;

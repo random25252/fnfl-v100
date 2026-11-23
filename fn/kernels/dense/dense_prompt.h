@@ -81,6 +81,13 @@ bool pd_product(const pd_args & a, void * stream);
 // pd_convert: a's f, lay, k, n, w and grids (rows, x and out unused) into wt FP16 [n][k] (16-byte aligned)
 bool pd_convert(const pd_args & a, uint16_t * wt, void * stream);
 
+// --fnfl-dense-grouped on|off (FNFL_DENSE_GROUPED=1; docs/fnfl/prefill-headroom.md): pd_tc's large-tile CTAs take
+// their tiles in groups of pt_group_rows row tiles (better L2 reuse of the weights); bitwise the same. Set before the
+// first prompt (process-wide); default off
+constexpr int32_t pt_group_rows = 8;
+void              set_dense_grouped(bool on);
+bool              dense_grouped();
+
 // an output segment of pd_tc: columns [previous end, end) to out [rows][ld] (end a multiple of 8, ld of 2)
 struct pt_seg {
     float * out = nullptr;

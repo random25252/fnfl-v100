@@ -4467,6 +4467,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--fnfl-dense-grouped"}, "on|off",
+        "FNFL: run the prompt path's large dense products with their thread blocks in groups of row tiles, so a wave "
+        "of blocks shares the same weight slices in L2 instead of streaming the whole matrix again "
+        "(docs/fnfl/prefill-headroom.md). Outputs are bitwise the same (default: off)",
+        [](common_params & params, const std::string & value) {
+            if (value != "on" && value != "off") {
+                throw std::invalid_argument("--fnfl-dense-grouped is on or off");
+            }
+            params.fnfl.dense_grouped = value == "on";
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--fnfl-check-state"},
         "FNFL TEST (SV1): after every engine call, compare the engine's tokens with the slot's; fail the request on a mismatch",
         [](common_params & params) { params.fnfl.check_state = true; }

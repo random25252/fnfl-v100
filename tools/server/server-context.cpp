@@ -539,6 +539,7 @@ private:
         lp.config.graph_copy_skip = params_base.fnfl.graph_copy_skip;
         lp.config.prompt_graphs   = params_base.fnfl.prompt_graphs;
         lp.config.hc_up_staged    = params_base.fnfl.hc_up_staged;
+        lp.config.dense_grouped   = params_base.fnfl.dense_grouped;
         lp.config.check_state    = params_base.fnfl.check_state;
         lp.config.test_eog       = params_base.fnfl.test_eog;
         lp.config.test_fail_step = params_base.fnfl.test_fail_step;
