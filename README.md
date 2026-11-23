@@ -20,16 +20,33 @@ Claude (Anthropic's coding agent), directed and run on the fork owner's machine.
   - On one X299 machine with two V100s, Swift decode went from 162 to 183 tok/s (+13%) with `--fnfl-spec-d 3`.
   - [The write-up](https://github.com/random25252/fnfl-v100/blob/iq3s-swift/docs/fnfl/decode-headroom.md) has the
     measurements, a microbenchmark to check your own platform, and the ideas left to try.
+- **Faster first token for short prompts and short additions to a conversation.** Prompt pieces of 512 tokens or
+  fewer run as CUDA graphs upstream. On the same X299 machine, each graph replay set every GPU-to-GPU copy again, and
+  a copy set again to unchanged parameters falls off the copy engine onto a path about 14 times slower. Prompts and
+  appends of 65–512 tokens (a short question, a tool result in an agent loop, a user turn after a long history) waited
+  2–2.6 times longer for their first token than they needed to.
+  - The fork adds two opt-in server flags. `--fnfl-prompt-graphs off` runs those pieces as direct launches, the
+    fastest choice measured there. `--fnfl-graph-copy-skip on` fixes the graphs themselves for anyone who keeps them.
+    Outputs are bitwise identical either way.
+  - Measured with two V100s and Swift: a 512-token prompt went from 0.70 to 0.27 s to the first token, and a
+    256-token append after 30K tokens of history from 0.41 to 0.20 s. Prompts of 640 tokens or more are unchanged.
+  - [The write-up](https://github.com/random25252/fnfl-v100/blob/iq3s-swift/docs/fnfl/prefill-headroom.md) also has
+    where a long prompt's time goes, the hardware floor, and the ideas left for faster prompt reading. Its
+    microbenchmark (`docs/iq3s-tools/p2p/graph_copy_update.cu.txt`) shows in a minute whether your platform has the
+    copy problem.
 - **Diagnostics:** per-message wait counters for the card-to-card exchanges (a compile-time option) and verification
   tools for new quants.
 
 **Who might want it:**
 - anyone running the Swift IQ3_S quant;
 - anyone with two V100s on an Intel board with the cards on different root ports, whose decode is slower than
-  upstream's figures (the write-up's microbenchmark checks this in a minute).
+  upstream's figures (the write-up's microbenchmark checks this in a minute);
+- anyone on such a board whose short prompts or agent turns are slow to start: if a 512-token prompt takes much longer
+  to its first token than a 640-token one, `--fnfl-prompt-graphs off` is for you. Interactive chat and agentic coding,
+  where most turns add a few hundred tokens to a long history, gain the most. Long fresh prompts don't change.
 
-On a platform where GPU-to-GPU writes work properly, the upstream project is what you want. The flags default off, so
-the fork behaves like upstream unless you pass them.
+On a platform where GPU-to-GPU writes work properly, the upstream project is what you want. Every flag defaults to
+upstream's behaviour, so the fork behaves like upstream unless you pass them.
 
 Tested on one machine only. The original README follows.
 
