@@ -1,0 +1,33 @@
+// P2P regression set: (1) kernel peer-write time by message size, back to back; (2) sustained stores/loads after a
+// ~14.5 us compute stand-in to local / peer / pinned host; (3) the HC-like publication pattern at B = 1, 3, 5.
+#include <cstdio>
+#include <cuda_runtime.h>
+__global__ void copyk(int4* d, size_t n){ for(size_t i=blockIdx.x*blockDim.x+threadIdx.x;i<n;i+=gridDim.x*blockDim.x) d[i]=make_int4(i,1,2,3); }
+__global__ void st(float4* dst, int n, int spin){ long long t0=clock64(); while(clock64()-t0<spin){}
+  for(int j=blockIdx.x*blockDim.x+threadIdx.x;j<n;j+=gridDim.x*blockDim.x) dst[j]=make_float4(1,2,3,4); }
+__global__ void ld(const float4* src, int n, int spin, float* sink){ long long t0=clock64(); while(clock64()-t0<spin){}
+  float acc=0; for(int j=blockIdx.x*blockDim.x+threadIdx.x;j<n;j+=gridDim.x*blockDim.x){ float4 v=__ldcv((float4*)src+j); acc+=v.x; } if(acc==12345.f) *sink=acc; }
+__global__ void hcl(float4* dst, int B, int spin){ long long t0=clock64(); while(clock64()-t0<spin){}
+  int i=threadIdx.x; if(blockIdx.x<40) for(int b=0;b<B;b++) if(i<42) dst[(b*40+blockIdx.x)*42+i]=make_float4(1,2,3,4); }
+int main(){
+  int c01,c10; cudaDeviceCanAccessPeer(&c01,0,1); cudaDeviceCanAccessPeer(&c10,1,0); printf("canAccessPeer %d %d\n",c01,c10);
+  cudaSetDevice(0); cudaDeviceEnablePeerAccess(1,0); cudaSetDevice(1); cudaDeviceEnablePeerAccess(0,0);
+  float4 *peer,*loc,*hostp,*hostd; float* sink; cudaSetDevice(1); cudaMalloc(&peer,64<<20); cudaMemset(peer,0,64<<20);
+  cudaSetDevice(0); cudaMalloc(&loc,64<<20); cudaMalloc(&sink,4);
+  cudaHostAlloc(&hostp,8<<20,cudaHostAllocMapped|cudaHostAllocPortable); cudaHostGetDevicePointer(&hostd,hostp,0);
+  cudaEvent_t a,b; cudaEventCreate(&a); cudaEventCreate(&b); float ms;
+  printf("(1) GPU0 -> GPU1 kernel writes, back to back\n");
+  for(size_t sz: {4096ul,65536ul,262144ul,1ul<<20,8ul<<20,64ul<<20}){ int reps=sz<(1<<20)?2000:50; size_t n=sz/16; int bl=n<80*256?(int)((n+255)/256):160;
+    copyk<<<bl,256>>>((int4*)peer,n); cudaDeviceSynchronize(); cudaEventRecord(a); for(int r=0;r<reps;r++) copyk<<<bl,256>>>((int4*)peer,n); cudaEventRecord(b); cudaEventSynchronize(b);
+    cudaEventElapsedTime(&ms,a,b); printf("  %9zu B: %9.2f us  %6.2f GB/s\n",sz,ms*1e3/reps,sz*reps/(ms*1e-3)/1e9); }
+  cudaEventRecord(a); for(int r=0;r<20;r++) cudaMemcpyPeerAsync(peer,1,loc,0,64<<20); cudaEventRecord(b); cudaEventSynchronize(b); cudaEventElapsedTime(&ms,a,b);
+  printf("  cudaMemcpyPeer 64 MiB: %.2f GB/s\n",(64<<20)*20.0/(ms*1e-3)/1e9);
+  printf("(2) sustained, us per launch (stand-in alone ~14.6)\n%-6s %-6s %8s %8s %8s %8s\n","target","op","12KB","36KB","60KB","240KB");
+  struct T{const char* n; float4* p;} ts[]={{"local",loc},{"peer",peer},{"host",hostd}};
+  for(int op=0;op<2;op++) for(auto t: ts){ printf("%-6s %-6s",t.n,op?"load":"store");
+    for(int kb: {12,36,60,240}){ int n=kb*1024/16; for(int w=0;w<2;w++){ cudaEventRecord(a); for(int r=0;r<640;r++){ if(op) ld<<<72,640>>>(t.p,n,20000,sink); else st<<<72,640>>>(t.p,n,20000);} cudaEventRecord(b); cudaEventSynchronize(b);}
+      cudaEventElapsedTime(&ms,a,b); printf(" %8.2f",ms*1e3/640);} printf("\n"); }
+  printf("(3) HC-like publication, us per launch: local / peer\n");
+  for(int B: {1,3,5}){ float r[2]; for(int p=0;p<2;p++){ for(int w=0;w<2;w++){ cudaEventRecord(a); for(int i=0;i<640;i++) hcl<<<72,640>>>(p?peer:loc,B,20000); cudaEventRecord(b); cudaEventSynchronize(b);} cudaEventElapsedTime(&ms,a,b); r[p]=ms*1e3/640; }
+    printf("  B%d: %7.2f / %7.2f\n",B,r[0],r[1]); }
+}

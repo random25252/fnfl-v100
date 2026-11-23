@@ -78,6 +78,21 @@ To stop the server, send it SIGTERM. Both cards should then return to 0 MiB.
   - `dense` reads every cell.
   - `sparse` reads only the 512 blocks the target's own sparse-attention indexer picked, which is much cheaper at depth.
   - The development machine serves with `sparse`, together with `--fnfl-spec-d 2`, and `fnfl-serve.sh` starts with both by default.
+- **`--fnfl-hmix-route peer|host`** (default `peer`): how each card sends its half of the mixed row (X-HMIX) to the
+  other.
+  - `peer` writes it straight into the other card's memory.
+  - `host` writes it into pinned host memory instead. A small kernel on the receiving card then copies each piece
+    into local memory once, and the consumers read it there.
+  - `host` helps on platforms where GPU-to-GPU writes collapse under load, like the development machine's X299
+    board ([`decode-headroom.md`](decode-headroom.md)). Outputs are bitwise the same either way. It needs two devices;
+    with both logical cards on one device it stays off.
+- **`--fnfl-hc-packed on|off`** (default `off`): send each HC block's moments (X-HC) to the other card as one
+  contiguous run instead of a short run for every row. The link then sees about 72 writes of up to 360 bytes
+  instead of 360 of 72. Outputs are bitwise the same.
+  - **On the development machine, use `--fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on`:** 183 tok/s
+    against 162 for `--fnfl-spec-d 2` without them, on `docs/iq3s-tools/bench.py` (2026-11-23).
+  - With both switches, 3 proposals beat 2 and 4 there. Without them, deeper steps paid for the link.
+  - On a machine whose peer writes don't collapse, measure before switching: the host route adds a hop.
 - **`--fnfl-kv-format q8|bf16`** (default `q8` on the two-card engine): the KV cache's format. `q8` is int8 with an FP16 scale every 64 values and passed the engine's KL bounds; `bf16` is the 16-bit cache. The expert-cache configurations use `bf16` and refuse `q8`.
 - **`--fnfl-ple-table lazy|full`** (default `lazy`): what happens to the model's 26.9 GiB per-layer-embedding table.
   - `lazy` leaves it memory-mapped and hints the pages each step will read, so the first requests may fault some in from disk.

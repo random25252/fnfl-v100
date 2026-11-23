@@ -1,0 +1,53 @@
+--- a/fn/kernels/hc/hc_bench.cpp
++++ b/fn/kernels/hc/hc_bench.cpp
+@@ -426,6 +426,7 @@
+ 
+     // HC4 (B3): the sublayer in one launch (hc::sub, mode 3); pre: the peer's moments landed (private slot n of
+     // pre_sub), sends to sinks on the peer, no resets
++    bool hmix_local = false; // TEMP xhc
+     bool fused(int32_t rows, int32_t r, int32_t n, bool pre, bool head = false) const {
+         using fn::xchg::msg;
+         card2 & k = *c[r];
+@@ -445,6 +446,9 @@
+         a.hmix_reset = pre ? nullptr : rg->slot(r, msg::hmix, prev);
+         a.hmix_own = pre ? k.own_hmix.p : rg->slot(r, msg::hmix, slot_of(n));
+         a.hmix_peer = pre ? c[1 - r]->sink_hmix.p : rg->slot(1 - r, msg::hmix, slot_of(n));
++        if (!pre && hmix_local) { // TEMP xhc: X-HMIX to this card's own sink, so only X-HC crosses
++            a.hmix_peer = k.sink_hmix.p;
++        }
+         a.err = rg->err(r);
+         a.card = r;
+         return report(head ? fn::hc::head_sub(rows, 3, a, k.st) : fn::hc::sub(rows, 3, a, k.st), "sub");
+@@ -904,7 +908,7 @@
+ int fnfl_hc2_bench(int dev0, int dev1, const char * mode) {
+     const std::string m = mode;
+     if (m != "all" && m != "ncu" && m != "nsys" && m != "q8" && m != "cold" && m != "ncu-up" && m != "ncu-fused" &&
+-        m != "ttts4") {
++        m != "ttts4" && m != "xhc") {
+         fprintf(stderr, "hc2-bench: MODE is all, ncu, ncu-up, ncu-fused, nsys, q8, cold or ttts4\n");
+         return 2;
+     }
+@@ -1183,6 +1187,23 @@
+                     }
+                 }
+             }
++        } else if (m == "xhc") { // TEMP: what X-HC alone costs, B = 1..5
++            for (const int32_t rows : {1, 2, 3, 4, 5}) {
++                const std::string b = "_B" + std::to_string(rows);
++                bn.hmix_local = false;
++                ok = ok && time_point2(bn, ("xhc_both" + b).c_str(), "sub + ready, X-HC and X-HMIX to the peer", "F",
++                                       rows, both, n_warm, n_timed, [&bn, rows](int32_t r, int32_t n) {
++                                           return bn.fused(rows, r, n, false) && bn.ready(rows, r, n, false);
++                                       });
++                bn.hmix_local = true;
++                ok = ok && time_point2(bn, ("xhc_only" + b).c_str(), "sub, X-HC to the peer, X-HMIX local", "F", rows,
++                                       both, n_warm, n_timed,
++                                       [&bn, rows](int32_t r, int32_t n) { return bn.fused(rows, r, n, false); });
++                bn.hmix_local = false;
++                ok = ok && time_point2(bn, ("xhc_none" + b).c_str(), "sub alone, pre-filled, sends to sinks", "F",
++                                       rows, both, n_warm, n_timed,
++                                       [&bn, rows](int32_t r, int32_t n) { return bn.fused(rows, r, n, true); }, true);
++            }
+         } else if (m == "cold") {
+             // HC4: arm 0's launches and the sublayer cold (R17), B = 1 and 3, both cards: down2 and up2 alone with the
+             // peer's data pre-filled, and the sublayer (down2, up2, ready) on both cards

@@ -41,8 +41,11 @@ cd ~/fnfl && ./build-fnfl/bin/llama-server --host 127.0.0.1 --port 8190 -np 1 --
   -m ~/Strata-data/models/swift/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf \
   -md ~/fnfl-models/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
   --fnfl-draft-subset ~/fnfl/models/draft-vocab-qwen3.8-flash-next.txt \
-  --fnfl-draft-attention sparse
+  --fnfl-draft-attention sparse --fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on
 ```
+
+The last three flags are this machine's card-to-card workaround: 183 tok/s, against 162 at the old default of
+`--fnfl-spec-d 2` without them (`docs/fnfl/decode-headroom.md`).
 
 The PLE table (27 GB, host RAM) is mlocked automatically, because `/etc/security/limits.d/90-fnfl.conf` gives
 `dom` unlimited memlock (from the next login on). The startup log should say `PLE warm: … locked (mlock)`.
@@ -59,21 +62,44 @@ Baseline (`docs/iq3s-tools/bench_run.sh` + `bench.py`, medians of 3, thinking of
 | ~21K | ~3,490 | 166 / 172 / 146 | 1.2–1.6 |
 
 Settings tried:
-- `--fnfl-spec-d 3` / `4` are **4–24% slower**. The base-model draft head disagrees with Swift too often. Keep d 2.
+- `--fnfl-spec-d 3` / `4` are **4–24% slower**. Keep d 2. This is not Swift-specific: the base model is slower at
+  d 4 by the same margin (below).
 - `--fnfl-draft-attention sparse` makes no difference up to 21K. Keep it on for long contexts, as upstream does.
+
+### Draft acceptance: Swift against the base model (2026-11-22)
+
+`docs/iq3s-tools/accept_compare.sh` ran `bench.py` (same 12 prompt/task cells, medians of 2, sparse draft attention,
+`-c 32768`) on the base IQ3_XXS file and on Swift, at d 2 and d 4. Averages over the 12 cells:
+
+| | Drafts accepted / step, d 2 | d 4 | Decode tok/s, d 2 | d 4 |
+|---|---|---|---|---|
+| Base IQ3_XXS | 1.43 | 2.12 | 147–182 | 116–163 |
+| Swift IQ3_S | 1.41 | 2.13 | 147–187 | 114–167 |
+
+**The shared MTP head fits Swift as well as it fits the base model**, cell by cell. Upstream's "3.13 tokens a step"
+(`engine.md`, d 4) is 2.13 accepted drafts plus the model's own token: the same as Swift. (Two short base d 2 cells
+decoded at ~100 tok/s with normal acceptance, most likely the first load still paging in; ignore them.)
 
 ## Research conclusions: where more speed could come from
 
-- **The step cost is already the author's:** ~16 ms a step, matching `docs/fnfl/engine.md`. The gap to upstream's
-  ~210 tok/s is **draft acceptance** (2.1–2.7 tokens a step against their 3.1), because Swift ships the **base
-  model's MTP head unchanged** (its model card says so; no Swift-specific draft exists on Hugging Face).
+- **There is no Swift-specific gap.** Step cost (~16 ms) matches `docs/fnfl/engine.md`, and draft acceptance matches
+  the base model's (see the comparison above). Swift ships the base model's MTP head unchanged (its model card says
+  so), but that costs nothing measurable. Upstream's ~210 tok/s comes from long agentic replies at depth, not from
+  these 400-token bench replies; the base model gets the same numbers as Swift on this bench. (An earlier version of
+  this file blamed the draft head, by comparing Swift's *drafts accepted* at d 2 with upstream's *tokens a step* at
+  d 4. That was wrong.)
 - **Hardware floor:** a verify step reads ~2.15 GB of dense weights plus the touched experts per card, about
   3–4 ms at 1,020 GB/s, but it takes ~14 ms. The rest is ~100 PCIe card-to-card hand-offs and small-kernel latency
-  per pass: the author's core design, which is hard to improve.
+  per pass: the author's core design. **Update 2026-11-23:** on this box the hand-offs were much worse than that,
+  because peer writes collapse. Two experimental fixes take 3 proposals to 183 tok/s, against 162 at the old best
+  (+13%). The cause, the fixes, where a step's time goes now and the ranked ideas for more are in
+  [`docs/fnfl/decode-headroom.md`](fnfl/decode-headroom.md).
 - **Easy, not yet tested:** `-np 2..4`, if several requests run at once (upstream: 335 t/s total for four users).
-- **Hard, the best lever:** fine-tune the MTP head on Swift's own outputs (self-distillation). Estimated +10–30%
-  decode. Multi-day: data from FNFL, PyTorch for the MTP layer (HC + its own 512 experts), training on V100 (no BF16
-  arithmetic), conversion to FNFL's draft GGUF. First check for existing Qwen3.8 MTP fine-tuning tooling.
+- **Ruled out: fine-tuning the MTP head on Swift's outputs.** The measured acceptance gap it would close is zero.
+  It could only help by beating the vendor's own head in general, which is unlikely. The cost would have been
+  ~1–2 weeks: an FNFL hidden-state dump hook, ~5–10M generated tokens (4–17 h), a PyTorch port of the MTP block
+  that matches FNFL exactly (the riskiest part), and training ~90M non-expert parameters with experts frozen (about
+  1–3 h a pass on one V100). Don't revisit this without new evidence of a Swift-specific acceptance gap.
 - **Not worth it:** prefill calibration. `fnfl-drive prompt-tune` is hard-wired to UD-Q4_K_XL, and IQ3_S prefill
   already matches upstream's (the log says "this file runs the retained routes at every rung").
 - **Untested:** other IQ3_S quants. The format fixes are generic, but expert profiles are per file (regenerate them
@@ -99,6 +125,7 @@ Settings tried:
 - `layer_compare.py`: FNFL per-layer HC dumps against `llama-eval-callback` output
 - `ref_llamacpp.sh`: the reference server run (`--n-cpu-moe 20`)
 - `long_prompt_test.sh`, `bench_run.sh` + `bench.py`: correctness and speed
+- `accept_compare.sh <out dir>`: draft acceptance and decode, base IQ3_XXS against Swift, at d 2 and d 4 (~25 min)
 
 The dump hooks these checkers read (`FNFL_HC_DUMP_DIR`, `FNFL_DBG_GLU_DUMP`, `FNFL_DBG_HEAD_DUMP`,
 `FNFL_DBG_ZERO_EXPERTS`) were removed in the tidy-up. Restore them from commit `0d0d0af`

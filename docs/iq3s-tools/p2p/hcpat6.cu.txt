@@ -1,0 +1,51 @@
+// Option-2 stand-in: X-HC moments always pushed to the peer; X-HMIX either pushed to the peer (as now),
+// stored to pinned host memory (and read back by the receiving card), or dropped (lower bound).
+#include <cstdio>
+#include <cuda_runtime.h>
+__device__ void put_run(unsigned* p, int base, int len, unsigned bits){
+  int q=threadIdx.x%32, off=base&3; int lo=max(4*q,off)-4*q, hi=min(4*q+4,off+len)-4*q; if(lo>=hi) return;
+  int at=base-off+4*q; if(lo==0&&hi==4) *(uint4*)(p+at)=make_uint4(bits,bits,bits,bits);
+  else if(hi-lo==2&&(lo&1)==0) *(uint2*)(p+at+lo)=make_uint2(bits,bits); else for(int i=lo;i<hi;i++) p[at+i]=bits; }
+__device__ unsigned sink;
+__global__ void land(const unsigned* hm_in, unsigned* local, int B){
+  const uint4* src=(const uint4*)hm_in; uint4* dst=(uint4*)local; int n=B*210;
+  for(int i=blockIdx.x*blockDim.x+threadIdx.x;i<n;i+=gridDim.x*blockDim.x) dst[i]=__ldcv(src+i); }
+__global__ void k(unsigned* hc, unsigned* hm, const unsigned* hm_in, int B, int spin, int hc_contig, int mode){
+  // receiver side of host-routed X-HMIX: pull what the other card left in host memory
+  unsigned acc=0;
+  // receiver: every block reads the sender's whole half (840 words a row), as FNFL's consumers do.
+  // mode 1: volatile (.cv) loads; mode 3: plain loads (lets L2 serve the repeats, if it caches host lines)
+  if(mode==1 || mode==3 || mode==4){ const uint4* src=(const uint4*)hm_in; int n=B*210;
+    for(int i=threadIdx.x;i<n;i+=blockDim.x){ uint4 v = mode==3 ? __ldcg(src+i) : __ldcv(src+i); acc^=v.x^v.w; } }
+  long long t0=clock64(); while(clock64()-t0<spin){}
+  int w=threadIdx.x/32, l=threadIdx.x%32, s=blockIdx.x%4, g=blockIdx.x/4;
+  if(hc_contig){ int n16=(B*72+15)/16; uint4* sp=(uint4*)hc + blockIdx.x*24; if(threadIdx.x<n16) sp[threadIdx.x]=make_uint4(1,2,3,4); }
+  else if(w<B){ unsigned* row=hc+w*1300; put_run(row,4+320*s+18*g,18,0x3f800000u); if(g==0 && l==0) row[s]=1; }
+  if(mode!=2 && blockIdx.x<40 && w>=5 && w<5+B){ int b=w-5; unsigned* row=hm+b*1680; int j=blockIdx.x;
+    if(l<8) *(uint4*)(row+32*j+4*l)=make_uint4(1,2,3,4); if(l<2) *(uint4*)(row+1280+8*j+4*l)=make_uint4(5,6,7,8);
+    if(l==0) *(uint2*)(row+1600+2*j)=make_uint2(9,10); }
+  if(acc==0xdeadbeefu) sink=acc;
+}
+int main(){
+  cudaSetDevice(0); cudaDeviceEnablePeerAccess(1,0); cudaStream_t st[2]; cudaStreamCreate(&st[0]);
+  cudaSetDevice(1); cudaDeviceEnablePeerAccess(0,0); cudaStreamCreate(&st[1]);
+  unsigned *hc[2],*hm[2],*host[2];
+  for(int d=0;d<2;d++){ cudaSetDevice(d); cudaMalloc(&hc[d],1<<20); cudaMalloc(&hm[d],1<<20); }
+  for(int d=0;d<2;d++){ cudaHostAlloc(&host[d],1<<20,cudaHostAllocPortable|cudaHostAllocMapped); }
+  cudaSetDevice(0); cudaEvent_t a,b; cudaEventCreate(&a); cudaEventCreate(&b);
+  const char* mn[5]={"X-HMIX to peer (now)","via host, .cv reads","no X-HMIX (bound)","via host, L2 reads","via host + landing"};
+  printf("us per sublayer launch, both cards, 20000-cycle compute stand-in\n");
+  printf("%-12s %-22s %8s %8s %8s %8s %8s\n","X-HC","mode","B1","B2","B3","B4","B5");
+  for(int hcc=0;hcc<2;hcc++) for(int m=0;m<5;m++){ printf("%-12s %-22s", hcc?"contiguous":"shipped", mn[m]);
+    for(int B=1;B<=5;B++){ float ms;
+      for(int rep=0;rep<2;rep++){ cudaSetDevice(0); cudaEventRecord(a,st[0]);
+        for(int r=0;r<960;r++) for(int d=0;d<2;d++){ cudaSetDevice(d);
+          // card d writes X-HMIX to host[d]; reads the other card's from host[1-d]
+          unsigned* dst = (m==1||m==3||m==4) ? host[d] : hm[1-d];
+          if(m==4) land<<<8,256,0,st[d]>>>(host[1-d],hm[d],B);
+          k<<<72,640,0,st[d]>>>(hc[1-d],dst,m==4?hm[d]:host[1-d],B,20000,hcc,m); }
+        cudaSetDevice(0); cudaEventRecord(b,st[0]); cudaEventSynchronize(b); cudaSetDevice(1); cudaStreamSynchronize(st[1]); }
+      cudaEventElapsedTime(&ms,a,b); printf(" %8.2f",ms*1e3/960); }
+    printf("\n"); }
+  cudaError_t e=cudaGetLastError(); if(e) printf("err %s\n",cudaGetErrorString(e));
+}

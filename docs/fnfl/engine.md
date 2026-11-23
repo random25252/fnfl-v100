@@ -74,6 +74,12 @@ FNFL splits every layer in half rather than giving each card half the layers. Bo
 
 **Exchanges** ([`fn/xchg/`](../../fn/xchg/)) are direct peer-to-peer writes into the other card's memory. Every sublayer ends with one, which makes about a hundred exchanges per decode pass, so their latency is a large part of the design.
 
+On some platforms, GPU-issued writes into the other card collapse once many are in flight. The development machine's X299 board is one: there, peer writes drop to about 1 GB/s past about 64 KB, and fragmented writes suffer most. Two server switches work around it, with bitwise-identical outputs:
+- `--fnfl-hmix-route host` sends the mixed row (X-HMIX) through pinned host memory, with a landing kernel on the receiver;
+- `--fnfl-hc-packed on` sends each HC block's moments (X-HC) as one contiguous run.
+
+[`decode-headroom.md`](decode-headroom.md) has the measurements, where a step's time goes now, and the ideas left for more decode speed.
+
 **Sampling** happens on both cards from the same exchanged values, with the same machine code. The two cards reach the same decision without one card broadcasting it.
 
 ## A decode step
