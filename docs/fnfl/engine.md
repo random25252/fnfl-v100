@@ -131,8 +131,8 @@ That run averaged 3.13 tokens a step, for 194.8 tokens/s. The step time barely m
   - Up to eight checkpoints are kept.
 - **Failures:** a chunk that fails publishes nothing, so the slot's state stays consistent.
 
-[`prefill-headroom.md`](prefill-headroom.md) has the leads for faster prompt reading and time to first token, from a
-survey of other engines, ranked.
+[`prefill-headroom.md`](prefill-headroom.md) has the measured breakdown of a chunk's time, the hardware floor, the
+graph-route fix for short prompts and appends (`--fnfl-prompt-graphs off`), and the ranked ideas for more.
 
 ## Memory
 

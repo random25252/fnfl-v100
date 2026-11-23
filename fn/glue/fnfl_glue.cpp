@@ -4,6 +4,7 @@
 #include "fn/borrowed/gguf_meta.h"
 #include "fn/fnfl.h"
 #include "fn/loader/run_load.h"
+#include "fn/model/graph_rec.h"
 #include "fn/model/kv_pool.h"
 #include "fn/model/model.h"
 #include "fn/model/prompt.h"
@@ -472,9 +473,12 @@ fnfl_engine * fnfl_load(const fnfl_load_params & params, fnfl_model_meta & meta,
     }
     fn::xchg::set_hmix_host(params.config.hmix_route == "host");
     fn::xchg::set_hc_packed(params.config.hc_packed);
-    fprintf(stderr, "FNFL: --fnfl-hmix-route %s; --fnfl-hc-packed %s\n",
+    fn::model::graph_copy_skip(params.config.graph_copy_skip);
+    fn::model::prompt_graphs(params.config.prompt_graphs);
+    fprintf(stderr, "FNFL: --fnfl-hmix-route %s; --fnfl-hc-packed %s; --fnfl-graph-copy-skip %s; --fnfl-prompt-graphs %s\n",
             params.config.hmix_route.empty() ? "peer (default)" : params.config.hmix_route.c_str(),
-            params.config.hc_packed ? "on" : "off (default)");
+            params.config.hc_packed ? "on" : "off (default)", params.config.graph_copy_skip ? "on" : "off (default)",
+            params.config.prompt_graphs ? "on (default)" : "off");
     fn::loader::run_load_report lr;
     auto m = std::make_unique<fn::model::model>();
     if (!fn::loader::load_for_run(lp, c.n_ctx_slot, *m, lr, err)) {

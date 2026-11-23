@@ -4430,6 +4430,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--fnfl-graph-copy-skip"}, "on|off",
+        "FNFL: when a prompt chunk's unit graph is replayed, leave a card-to-card copy node alone if its parameters "
+        "are unchanged instead of re-setting them. On some platforms a re-set copy node falls off the copy engine "
+        "onto a far slower path, which made prompt pieces of 512 rows or fewer 2-2.6x slower "
+        "(docs/fnfl/prefill-headroom.md). Outputs are bitwise the same (default: off)",
+        [](common_params & params, const std::string & value) {
+            if (value != "on" && value != "off") {
+                throw std::invalid_argument("--fnfl-graph-copy-skip is on or off");
+            }
+            params.fnfl.graph_copy_skip = value == "on";
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--fnfl-prompt-graphs"}, "on|off",
+        "FNFL: run prompt pieces of 512 rows or fewer as CUDA graphs (on) or as direct launches (off); the same "
+        "kernels, so outputs are bitwise the same. Also live through POST /props {\"prompt_graphs\": false}. On the "
+        "X299 development box off is fastest (docs/fnfl/prefill-headroom.md) (default: on)",
+        [](common_params & params, const std::string & value) {
+            if (value != "on" && value != "off") {
+                throw std::invalid_argument("--fnfl-prompt-graphs is on or off");
+            }
+            params.fnfl.prompt_graphs = value == "on";
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--fnfl-check-state"},
         "FNFL TEST (SV1): after every engine call, compare the engine's tokens with the slot's; fail the request on a mismatch",
         [](common_params & params) { params.fnfl.check_state = true; }

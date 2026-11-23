@@ -11,6 +11,13 @@
 //            and waits are already the graph's edges. Any difference (another kind, function, count, or a refused
 //            update) is a mismatch; the caller then captures again.
 // Without a recorder on the thread every call goes straight to the runtime.
+//
+// Copy-node updates (--fnfl-graph-copy-skip on, FNFL_GRAPH_COPY_SKIP=1; docs/fnfl/prefill-headroom.md): on some
+// platforms a card-to-card copy node that is updated with the parameters it already holds is re-planned onto a slow
+// path (measured on the X299 box, driver 580: 2.6 MB from 0.31 ms to 4.4 ms, the SM peer-store rate), while an update
+// that changes them keeps the copy engine. With the switch on, a copy node's update is skipped when its parameters
+// equal the ones the node already holds (the captured ones, or the last update's): the same copy either way, so
+// outputs are bitwise the same.
 
 #include <cuda_runtime.h>
 
@@ -21,11 +28,30 @@ namespace fn::model {
 
 enum class grec_kind : int32_t { kernel, coop, copy, copy_peer, copy_2d, set, set_2d, event_record, event_wait };
 
-struct grec_op {
-    grec_kind       kind;
-    const void *    func = nullptr;  // kernels
-    cudaGraphNode_t node = nullptr;  // nodes of the captured graph (null for events)
+// a copy node's parameters as last set (capture or update): the skip's comparison
+struct grec_copy {
+    void *         dst  = nullptr;
+    const void *   src  = nullptr;
+    size_t         dp = 0, sp = 0, w = 0, h = 0;
+    cudaMemcpyKind kind = cudaMemcpyDefault;
+    bool           set  = false;
+
+    bool operator==(const grec_copy & o) const {
+        return set && o.set && dst == o.dst && src == o.src && dp == o.dp && sp == o.sp && w == o.w && h == o.h &&
+               kind == o.kind;
+    }
 };
+
+struct grec_op {
+    grec_kind         kind;
+    const void *      func = nullptr;  // kernels
+    cudaGraphNode_t   node = nullptr;  // nodes of the captured graph (null for events)
+    mutable grec_copy last;            // copies: the node's parameters now (updated through the const replay list)
+};
+
+// the copy-skip switch (process-wide; set before the first prompt; unset: FNFL_GRAPH_COPY_SKIP=1, else off)
+void graph_copy_skip(bool on);
+bool graph_copy_skip_on();
 
 class graph_rec {
   public:

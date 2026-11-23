@@ -46,6 +46,12 @@ struct fnfl_config {
     // contiguous run a block. Outputs are bitwise the same either way.
     std::string hmix_route;
     bool hc_packed = false;
+    // --fnfl-graph-copy-skip on|off (off): a prompt unit graph's copy nodes are not re-set on replay when their
+    // parameters are unchanged (fn/model/graph_rec.h); bitwise the same
+    bool graph_copy_skip = false;
+    // --fnfl-prompt-graphs on|off (on): prompt pieces of at most 512 rows as unit graphs or direct launches
+    // (fn::model::prompt_graphs; also POST /props); bitwise the same
+    bool prompt_graphs = true;
     bool check_state = false;      // TEST (--fnfl-check-state): the shell compares fnfl_slot_tokens after every call
     std::vector<int32_t> test_eog; // TEST (--fnfl-test-eog ID): more end-of-generation IDs
     int32_t test_fail_step = 0;    // TEST (--fnfl-test-fail-step K): step K of the next request fails once; 0 off

@@ -1,0 +1,57 @@
+// graph_copy_update: the --fnfl-graph-copy-skip reproducer (docs/fnfl/prefill-headroom.md). A two-card captured graph
+// (compute, each card's partial copied to the other on its copy stream, consumers), timed per round: mode 1 eager,
+// mode 0 graph; upd 1 re-sets each copy node with the parameters it already holds (the slow case on the X299 box),
+// 3 the same through cudaGraphExecMemcpyNodeSetParams, 5 cudaGraphExecUpdate, 4/6/7/8 changed parameters (fast).
+// Build: cp graph_copy_update.cu.txt x.cu && nvcc -O3 -arch=sm_70 x.cu -o x; run: ./x BYTES MODE UPD
+// a two-device captured graph: compute on each card, then each card's partial copied to the other on its copy
+// stream (cudaMemcpyAsync Default, as prompt.cpp peer_copy does under capture), then a consumer on each card.
+#include <cstdio>
+#include <cuda_runtime.h>
+#define CK(x) do{cudaError_t e=(x); if(e){printf("%d %s\n",__LINE__,cudaGetErrorString(e)); return 1;}}while(0)
+__global__ void touch(float* p, size_t n){ size_t i=blockIdx.x*(size_t)blockDim.x+threadIdx.x; if(i<n) p[i]=p[i]*0.5f+1.f; }
+int main(int argc, char** argv){
+  size_t n = argc>1 ? atol(argv[1]) : 2621696; int mode = argc>2 ? atoi(argv[2]) : 0; int upd = argc>3 ? atoi(argv[3]) : 0; // mode 0 graph, 1 eager; upd: 1 update copy nodes before timing
+  float *a[2], *r[2]; cudaStream_t s[2], c[2];
+  for(int d=0; d<2; ++d){ CK(cudaSetDevice(d)); CK(cudaDeviceEnablePeerAccess(1-d,0)); CK(cudaMalloc(&a[d], n)); CK(cudaMalloc(&r[d], n));
+    CK(cudaStreamCreateWithFlags(&s[d],cudaStreamNonBlocking)); CK(cudaStreamCreateWithFlags(&c[d],cudaStreamNonBlocking)); }
+  cudaEvent_t ev[16]; for(int d=0; d<2; ++d){ CK(cudaSetDevice(d)); for(int i=0;i<8;++i) CK(cudaEventCreateWithFlags(&ev[d*8+i], cudaEventDisableTiming)); }
+  auto body=[&]()->int{
+    CK(cudaSetDevice(0)); CK(cudaEventRecord(ev[0], s[0]));
+    CK(cudaSetDevice(1)); CK(cudaStreamWaitEvent(s[1], ev[0], 0));
+    for(int d=0; d<2; ++d){ CK(cudaSetDevice(d)); touch<<<(n/4+255)/256,256,0,s[d]>>>(a[d], n/4);
+      CK(cudaEventRecord(ev[d*8+1], s[d])); CK(cudaStreamWaitEvent(c[d], ev[d*8+1], 0));
+      if (mode==0) CK(cudaMemcpyAsync(r[1-d], a[d], n, cudaMemcpyDefault, c[d])); else CK(cudaMemcpyPeerAsync(r[1-d],1-d,a[d],d,n,c[d]));
+      CK(cudaEventRecord(ev[d*8+2], c[d])); }
+    for(int d=0; d<2; ++d){ CK(cudaSetDevice(d)); CK(cudaStreamWaitEvent(s[d], ev[(1-d)*8+2], 0)); touch<<<(n/4+255)/256,256,0,s[d]>>>(r[d], n/4); }
+    CK(cudaSetDevice(1)); CK(cudaEventRecord(ev[9], s[1])); CK(cudaSetDevice(0)); CK(cudaStreamWaitEvent(s[0], ev[9], 0));
+    return 0; };
+  cudaGraphExec_t ex=nullptr;
+  if(mode==0){ CK(cudaSetDevice(0)); CK(cudaStreamBeginCapture(s[0], cudaStreamCaptureModeRelaxed)); if(body()) return 1;
+    cudaGraph_t g; CK(cudaSetDevice(0)); CK(cudaStreamEndCapture(s[0], &g)); CK(cudaGraphInstantiate(&ex, g, 0)); }
+  if(mode==0 && upd){ cudaGraph_t g2; CK(cudaGraphExecGetFlags(ex, nullptr)==cudaSuccess?cudaSuccess:cudaSuccess);
+    // walk the exec's source graph: re-capture to get the nodes, then update each memcpy node in the exec with the same params
+    CK(cudaSetDevice(0)); CK(cudaStreamBeginCapture(s[0], cudaStreamCaptureModeRelaxed)); if(body()) return 1; CK(cudaSetDevice(0)); CK(cudaStreamEndCapture(s[0], &g2));
+    size_t nn=0; CK(cudaGraphGetNodes(g2, nullptr, &nn)); cudaGraphNode_t* nodes=new cudaGraphNode_t[nn]; CK(cudaGraphGetNodes(g2, nodes, &nn));
+    // exec nodes are addressed by the original graph's nodes: rebuild ex from g2 so the handles match
+    CK(cudaGraphExecDestroy(ex)); CK(cudaGraphInstantiate(&ex, g2, 0));
+    int nup=0; for(size_t i=0;i<nn;++i){ cudaGraphNodeType t; CK(cudaGraphNodeGetType(nodes[i], &t)); if(t==cudaGraphNodeTypeMemcpy){
+      int d = nup; void* dst = upd==2 ? (void*)r[d] : (void*)r[1-d]; // same params either way (order of capture: card 0 then 1)
+      cudaMemcpy3DParms p; CK(cudaGraphMemcpyNodeGetParams(nodes[i], &p));
+      if(upd==1) CK(cudaGraphExecMemcpyNodeSetParams1D(ex, nodes[i], (char*)p.dstPtr.ptr, (char*)p.srcPtr.ptr, n, cudaMemcpyDefault));
+      if(upd==2) CK(cudaGraphExecMemcpyNodeSetParams1D(ex, nodes[i], (char*)p.dstPtr.ptr, (char*)p.srcPtr.ptr, n, cudaMemcpyDeviceToDevice));
+      if(upd==3) CK(cudaGraphExecMemcpyNodeSetParams(ex, nodes[i], &p));
+      if(upd==4) CK(cudaGraphExecMemcpyNodeSetParams1D(ex, nodes[i], (char*)p.dstPtr.ptr, (char*)p.srcPtr.ptr, n/2, cudaMemcpyDefault));
+      if(upd==6) CK(cudaGraphExecMemcpyNodeSetParams1D(ex, nodes[i], (char*)p.dstPtr.ptr, (char*)p.srcPtr.ptr, n-256, cudaMemcpyDefault));
+      if(upd==7){ CK(cudaGraphExecMemcpyNodeSetParams1D(ex, nodes[i], (char*)p.dstPtr.ptr, (char*)p.srcPtr.ptr, n/2, cudaMemcpyDefault));
+                  CK(cudaGraphExecMemcpyNodeSetParams1D(ex, nodes[i], (char*)p.dstPtr.ptr, (char*)p.srcPtr.ptr, n, cudaMemcpyDefault)); }
+      if(upd==8) CK(cudaGraphExecMemcpyNodeSetParams1D(ex, nodes[i], (char*)p.dstPtr.ptr+256, (char*)p.srcPtr.ptr+256, n-256, cudaMemcpyDefault));
+      ++nup; (void)dst; } }
+    if(upd==5){ cudaGraphExecUpdateResultInfo info; CK(cudaGraphExecUpdate(ex, g2, &info)); }
+    printf("updated %d memcpy nodes\n", nup); }
+  cudaEvent_t t0,t1; CK(cudaSetDevice(0)); CK(cudaEventCreate(&t0)); CK(cudaEventCreate(&t1));
+  auto run=[&](){ if(mode==0){ cudaSetDevice(0); return (int)cudaGraphLaunch(ex, s[0]); } return body(); };
+  for(int i=0;i<3;++i) if(run()) return 1;
+  CK(cudaSetDevice(0)); CK(cudaEventRecord(t0, s[0])); int reps=20; for(int i=0;i<reps;++i) if(run()) return 1;
+  CK(cudaSetDevice(0)); CK(cudaEventRecord(t1, s[0])); CK(cudaEventSynchronize(t1)); float ms; CK(cudaEventElapsedTime(&ms,t0,t1));
+  printf("bytes/copy as set; %s n=%zu: %.1f us a round (two %zu-byte copies)\n", mode==0?"graph":"eager", n, 1000*ms/reps, n);
+}

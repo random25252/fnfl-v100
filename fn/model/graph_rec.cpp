@@ -1,5 +1,9 @@
 #include "fn/model/graph_rec.h"
 
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+
 // the real runtime entry points (the linker's --wrap names)
 extern "C" {
 cudaError_t __real_cudaLaunchKernel(const void * f, dim3 g, dim3 b, void ** args, size_t smem, cudaStream_t s);
@@ -30,7 +34,35 @@ namespace {
 
 thread_local graph_rec * tl_rec = nullptr;
 
+std::atomic<int32_t> g_copy_skip{ -1 };  // -1: unset (the environment decides on first use)
+
+// whether an update to c may be skipped (the switch on and c the node's parameters now); else c becomes them
+bool copy_unchanged(const grec_op & op, const grec_copy & c) {
+    if (graph_copy_skip_on() && op.last == c) {
+        return true;
+    }
+    op.last = c;
+    return false;
+}
+
 }  // namespace
+
+void graph_copy_skip(bool on) {
+    g_copy_skip.store(on ? 1 : 0);
+}
+
+bool graph_copy_skip_on() {
+    int32_t cur = g_copy_skip.load(std::memory_order_relaxed);
+    if (cur < 0) {
+        const char *  e    = std::getenv("FNFL_GRAPH_COPY_SKIP");
+        const int32_t want = e != nullptr && e[0] == '1' ? 1 : 0;
+        if (g_copy_skip.compare_exchange_strong(cur, want) && want == 1) {
+            std::fprintf(stderr, "fn::model: graph copy skip on (FNFL_GRAPH_COPY_SKIP=1)\n");
+        }
+        cur = g_copy_skip.load();
+    }
+    return cur == 1;
+}
 
 graph_rec * graph_rec_current() {
     return tl_rec;
@@ -121,11 +153,13 @@ cudaError_t graph_rec::copy(void * dst, const void * src, size_t n, cudaMemcpyKi
         const cudaError_t e = __real_cudaMemcpyAsync(dst, src, n, kind, s);
         if (e == cudaSuccess) {
             note(grec_kind::copy, nullptr, s);
+            out_->back().last = grec_copy{ dst, src, n, n, n, 1, kind, true };
         }
         return e;
     }
     const grec_op * op = next(grec_kind::copy, nullptr);
-    if (op != nullptr && cudaGraphExecMemcpyNodeSetParams1D(exec_, op->node, dst, src, n, kind) != cudaSuccess) {
+    if (op != nullptr && !copy_unchanged(*op, grec_copy{ dst, src, n, n, n, 1, kind, true }) &&
+        cudaGraphExecMemcpyNodeSetParams1D(exec_, op->node, dst, src, n, kind) != cudaSuccess) {
         (void) cudaGetLastError();
         bad_ = true;
     }
@@ -137,11 +171,12 @@ cudaError_t graph_rec::copy_peer(void * dst, int dd, const void * src, int sd, s
         const cudaError_t e = __real_cudaMemcpyPeerAsync(dst, dd, src, sd, n, s);
         if (e == cudaSuccess) {
             note(grec_kind::copy_peer, nullptr, s);
+            out_->back().last = grec_copy{ dst, src, n, n, n, 1, cudaMemcpyDefault, true };
         }
         return e;
     }
     const grec_op * op = next(grec_kind::copy_peer, nullptr);
-    if (op != nullptr) {
+    if (op != nullptr && !copy_unchanged(*op, grec_copy{ dst, src, n, n, n, 1, cudaMemcpyDefault, true })) {
         cudaMemcpy3DParms p = {};
         p.srcPtr            = make_cudaPitchedPtr(const_cast<void *>(src), n, n, 1);
         p.dstPtr            = make_cudaPitchedPtr(dst, n, n, 1);
@@ -167,11 +202,12 @@ cudaError_t graph_rec::copy_2d(void *         dst,
         const cudaError_t e = __real_cudaMemcpy2DAsync(dst, dp, src, sp, w, h, kind, s);
         if (e == cudaSuccess) {
             note(grec_kind::copy_2d, nullptr, s);
+            out_->back().last = grec_copy{ dst, src, dp, sp, w, h, kind, true };
         }
         return e;
     }
     const grec_op * op = next(grec_kind::copy_2d, nullptr);
-    if (op != nullptr) {
+    if (op != nullptr && !copy_unchanged(*op, grec_copy{ dst, src, dp, sp, w, h, kind, true })) {
         cudaMemcpy3DParms p = {};
         p.srcPtr            = make_cudaPitchedPtr(const_cast<void *>(src), sp, w, h);
         p.dstPtr            = make_cudaPitchedPtr(dst, dp, w, h);

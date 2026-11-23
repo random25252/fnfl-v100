@@ -41,11 +41,14 @@ cd ~/fnfl && ./build-fnfl/bin/llama-server --host 127.0.0.1 --port 8190 -np 1 --
   -m ~/Strata-data/models/swift/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf \
   -md ~/fnfl-models/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
   --fnfl-draft-subset ~/fnfl/models/draft-vocab-qwen3.8-flash-next.txt \
-  --fnfl-draft-attention sparse --fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on
+  --fnfl-draft-attention sparse --fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on \
+  --fnfl-prompt-graphs off
 ```
 
-The last three flags are this machine's card-to-card workaround: 183 tok/s, against 162 at the old default of
-`--fnfl-spec-d 2` without them (`docs/fnfl/decode-headroom.md`).
+The `--fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on` flags are this machine's card-to-card workaround:
+183 tok/s, against 162 at the old default of `--fnfl-spec-d 2` without them (`docs/fnfl/decode-headroom.md`).
+`--fnfl-prompt-graphs off` makes prompts and appends of 65–512 tokens reach their first token 2–2.6× sooner, with
+bitwise-identical outputs (`docs/fnfl/prefill-headroom.md`).
 
 The PLE table (27 GB, host RAM) is mlocked automatically, because `/etc/security/limits.d/90-fnfl.conf` gives
 `dom` unlimited memlock (from the next login on). The startup log should say `PLE warm: … locked (mlock)`.
@@ -101,7 +104,9 @@ decoded at ~100 tok/s with normal acceptance, most likely the first load still p
   that matches FNFL exactly (the riskiest part), and training ~90M non-expert parameters with experts frozen (about
   1–3 h a pass on one V100). Don't revisit this without new evidence of a Swift-specific acceptance gap.
 - **Not worth it:** prefill calibration. `fnfl-drive prompt-tune` is hard-wired to UD-Q4_K_XL, and IQ3_S prefill
-  already matches upstream's (the log says "this file runs the retained routes at every rung").
+  already matches upstream's (the log says "this file runs the retained routes at every rung"). Measured since
+  (`docs/fnfl/prefill-headroom.md`): the ladder ties the retained routes at large chunks anyway, and long prompts are
+  ~95% kernel time with dense, experts and HC about a quarter each.
 - **Untested:** other IQ3_S quants. The format fixes are generic, but expert profiles are per file (regenerate them
   with `gen_instances.py`).
 
