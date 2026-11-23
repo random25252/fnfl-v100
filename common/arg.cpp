@@ -4430,6 +4430,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--fnfl-hc-route"}, "peer|pull|host",
+        "FNFL, with --fnfl-hc-packed on: how the HC moments (X-HC) reach the other card in decode. peer writes them "
+        "into the other card's memory; pull lets the receiving card read them from the sender's memory; host writes "
+        "pinned host memory. pull and host are landed inside the HC launch by its blocks that are idle in the up "
+        "phase, and avoid the GPU-to-GPU write collapse of some platforms (docs/fnfl/decode-headroom.md); host needs "
+        "two devices. Outputs are bitwise the same (default: peer)",
+        [](common_params & params, const std::string & value) {
+            if (value != "peer" && value != "pull" && value != "host") {
+                throw std::invalid_argument("--fnfl-hc-route is peer, pull or host");
+            }
+            params.fnfl.hc_route = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--fnfl-graph-copy-skip"}, "on|off",
         "FNFL: when a prompt chunk's unit graph is replayed, leave a card-to-card copy node alone if its parameters "
         "are unchanged instead of re-setting them. On some platforms a re-set copy node falls off the copy engine "

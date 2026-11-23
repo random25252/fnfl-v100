@@ -451,6 +451,7 @@ struct common_params_fnfl {
     std::string          draft_attention;        // SP2's switch: dense or sparse; empty: dense
     std::string          hmix_route;             // --fnfl-hmix-route peer|host; empty: peer
     bool                 hc_packed      = false; // --fnfl-hc-packed on|off
+    std::string          hc_route;               // --fnfl-hc-route peer|pull|host; empty: peer
     bool                 graph_copy_skip = false; // --fnfl-graph-copy-skip on|off
     bool                 prompt_graphs   = true;  // --fnfl-prompt-graphs on|off
     bool                 hc_up_staged    = false; // --fnfl-hc-up-staged on|off

@@ -46,6 +46,10 @@ struct fnfl_config {
     // contiguous run a block. Outputs are bitwise the same either way.
     std::string hmix_route;
     bool hc_packed = false;
+    // --fnfl-hc-route peer|pull|host (empty: peer), with --fnfl-hc-packed on: X-HC pushed into the peer's memory,
+    // pulled by the receiver from the sender's memory, or sent through pinned host memory; both pull and host are
+    // landed inside the HC launch (fn/kernels/hc/hc.h sub). Bitwise the same.
+    std::string hc_route;
     // --fnfl-graph-copy-skip on|off (off): a prompt unit graph's copy nodes are not re-set on replay when their
     // parameters are unchanged (fn/model/graph_rec.h); bitwise the same
     bool graph_copy_skip = false;

@@ -90,9 +90,24 @@ To stop the server, send it SIGTERM. Both cards should then return to 0 MiB.
   contiguous run instead of a short run for every row. The link then sees about 72 writes of up to 360 bytes
   instead of 360 of 72. Outputs are bitwise the same.
   - **On the development machine, use `--fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on`:** 183 tok/s
-    against 162 for `--fnfl-spec-d 2` without them, on `docs/iq3s-tools/bench.py` (2026-11-23).
+    against 162 for `--fnfl-spec-d 2` without them, on `docs/iq3s-tools/bench.py` (2026-11-23); with
+    `--fnfl-hc-route host` (below) 194.
   - With both switches, 3 proposals beat 2 and 4 there. Without them, deeper steps paid for the link.
   - On a machine whose peer writes don't collapse, measure before switching: the host route adds a hop.
+- **`--fnfl-hc-route peer|pull|host`** (default `peer`; needs `--fnfl-hc-packed on` for `pull` and `host`): how the HC
+  moments (X-HC) reach the other card in decode.
+  - `peer` writes them into the other card's memory, as before.
+  - `pull`: no card sends. The receiving card reads them from the sender's memory over the peer mapping (peer reads
+    don't collapse).
+  - `host`: the sender writes them into the receiver's pinned host memory.
+  - With `pull` and `host`, the 32 blocks of the HC launch that are idle during its up phase land the moments into
+    local memory, where the up phase reads them as before. Outputs are bitwise the same.
+  - **On the development machine, use `host`:** 194 tok/s against 186 for `peer` on `docs/iq3s-tools/bench.py`
+    (+4.4%, faster on all 12 rows; `pull` gave 191), 2026-11-24. The wait for the other card's moments drops from
+    ~13–17 µs a sublayer (bimodal: ~half the sublayers hit the write collapse) to ~7–11 µs.
+    [`decode-headroom.md`](decode-headroom.md) has the details.
+  - `host` needs two devices; with one device it stays on `peer`. Single-card mode and the draft's own HC launches
+    are unaffected.
 - **`--fnfl-prompt-graphs on|off`** (default `on`): run prompt pieces of 512 rows or fewer (short prompts, short
   appends to a conversation, and a prompt's leftover rows past a multiple of 8,192) as CUDA graphs, or as direct
   launches. The kernels are the same, so outputs are bitwise the same. It can also be changed while the server runs

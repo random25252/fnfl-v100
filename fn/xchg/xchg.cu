@@ -106,6 +106,11 @@ rings::rings(int32_t dev0, int32_t dev1) {
                                        cudaHostAllocPortable | cudaHostAllocMapped),
                          "cudaHostAlloc hmix");
         }
+        if (ok && dev_[0] != dev_[1] && hc_host_enabled()) {
+            ok = cuda_ok(cudaHostAlloc(&hcbuf_[c], size_t(n_slot) * hc_own_at * sizeof(float),
+                                       cudaHostAllocPortable | cudaHostAllocMapped),
+                         "cudaHostAlloc hc");
+        }
     }
     ok_ = ok && reset_all();
 }
@@ -136,6 +141,9 @@ rings::~rings() {
         if (hbuf_[c] != nullptr) {
             cudaFreeHost(hbuf_[c]);
         }
+        if (hcbuf_[c] != nullptr) {
+            cudaFreeHost(hcbuf_[c]);
+        }
     }
 }
 
@@ -144,6 +152,13 @@ float * rings::host_hmix(int32_t card, int32_t s) const {
         return nullptr;
     }
     return hbuf_[card] + int64_t(s) * slot_words(msg::hmix);
+}
+
+float * rings::host_hc(int32_t card, int32_t s) const {
+    if (card < 0 || card > 1 || s < 0 || s >= n_slot || hcbuf_[card] == nullptr) {
+        return nullptr;
+    }
+    return hcbuf_[card] + int64_t(s) * hc_own_at;
 }
 
 float * rings::slot(int32_t card, msg m, int32_t s) const {
@@ -167,6 +182,9 @@ bool rings::reset_all() const {
                                     size_t(hmix_layout::code_words) * sizeof(float)),
                          "prefill codes")) {
                 return false;
+            }
+            if (float * h = host_hc(c, s); h != nullptr) {
+                std::memset(h, 0xff, size_t(hc_own_at) * sizeof(float));
             }
             if (float * h = host_hmix(c, s); h != nullptr) {
                 std::memset(h, 0xff, size_t(slot_bytes(msg::hmix)));
@@ -632,6 +650,7 @@ namespace {
 // -1: unset (the environment decides on first use), 0 off, 1 on
 std::atomic<int32_t> g_hmix_host{-1};
 std::atomic<int32_t> g_hc_packed{-1};
+std::atomic<int32_t> g_hc_host{-1};
 
 bool switch_on(std::atomic<int32_t> & v, const char * env, const char * what) {
     int32_t cur = v.load();
@@ -663,6 +682,14 @@ void set_hc_packed(bool on) {
 
 bool hc_packed_enabled() {
     return switch_on(g_hc_packed, "FNFL_HC_PACKED", "X-HC packed");
+}
+
+void set_hc_host(bool on) {
+    g_hc_host.store(on ? 1 : 0);
+}
+
+bool hc_host_enabled() {
+    return switch_on(g_hc_host, "FNFL_HC_HOST", "X-HC via host memory");
 }
 
 bool land_hmix(int32_t rows, int32_t peer_half, float * host, float * slot, uint32_t * err, void * stream) {

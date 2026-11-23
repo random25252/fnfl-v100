@@ -1,0 +1,38 @@
+// readlat: read latency from device 0 to local, peer (device 1) and pinned host memory, idle and with 1..5,200 readers
+// in flight; width 16 = 16-byte loads, 8 = 8-byte, both coalesced within a warp (the X-HC landers' pattern).
+// Build: cp readlat.cu.txt readlat.cu && nvcc -O3 -arch=sm_70 -o readlat readlat.cu
+#include <algorithm>
+// read latency from device 0: peer (device 1) memory vs pinned host, idle and with many concurrent readers
+#include <cstdio>
+#include <cuda_runtime.h>
+__global__ void chase(const unsigned long long* p, int iters, unsigned long long* out, int nthreads, int width16){
+  int t=blockIdx.x*blockDim.x+threadIdx.x; if(t>=nthreads) return;
+  long long t0=clock64(); unsigned long long acc=0;
+  for(int i=0;i<iters;i++){
+    if(width16==2){ uint4 v; const uint4* q=(const uint4*)(p)+((t+i*4096+(acc&1))%32768);
+      asm volatile("ld.volatile.global.v4.u32 {%0,%1,%2,%3}, [%4];":"=r"(v.x),"=r"(v.y),"=r"(v.z),"=r"(v.w):"l"(q)); acc+=v.x; }
+    else if(width16==3){ uint2 v; const uint2* q=(const uint2*)(p)+((t+i*8192+(acc&1))%65536);
+      asm volatile("ld.volatile.global.v2.u32 {%0,%1}, [%2];":"=r"(v.x),"=r"(v.y):"l"(q)); acc+=v.x; }
+    else if(width16){ uint4 v; const uint4* q=(const uint4*)(p+2*((t*7+i*131+(acc&1))%4096));
+      asm volatile("ld.volatile.global.v4.u32 {%0,%1,%2,%3}, [%4];":"=r"(v.x),"=r"(v.y),"=r"(v.z),"=r"(v.w):"l"(q)); acc+=v.x; }
+    else { uint2 v; const uint2* q=(const uint2*)(p+((t*7+i*131+(acc&1))%8192));
+      asm volatile("ld.volatile.global.v2.u32 {%0,%1}, [%2];":"=r"(v.x),"=r"(v.y):"l"(q)); acc+=v.x; }
+  }
+  long long dt=clock64()-t0; out[t]=dt/iters + (acc==12345?1:0);
+}
+int main(){
+  cudaSetDevice(0); cudaDeviceEnablePeerAccess(1,0); cudaSetDevice(1); cudaDeviceEnablePeerAccess(0,0);
+  unsigned long long *peer,*loc,*hostp,*hostd,*out; cudaSetDevice(1); cudaMalloc(&peer,1<<20); cudaMemset(peer,0,1<<20);
+  cudaSetDevice(0); cudaMalloc(&loc,1<<20); cudaMemset(loc,0,1<<20); cudaMalloc(&out,8*100000);
+  cudaHostAlloc(&hostp,1<<20,cudaHostAllocMapped|cudaHostAllocPortable); cudaHostGetDevicePointer(&hostd,hostp,0);
+  static unsigned long long h[100000];
+  struct T{const char*n; unsigned long long*p;} ts[]={{"local",loc},{"peer",peer},{"host",hostd}};
+  printf("%-6s %6s %5s %12s %12s %12s\n","target","thr","width","median_ns","p90_ns","max_ns");
+  for(auto t: ts) for(int w16=2; w16<4; w16++) for(int nt: {1,32,640,1300,2600,5200}){
+    int bl=(nt+639)/640; if(bl>32) bl=32; int bt=(nt+bl-1)/bl;
+    for(int rep=0;rep<2;rep++) chase<<<bl,bt>>>(t.p,200,out,nt,w16);
+    cudaDeviceSynchronize(); cudaMemcpy(h,out,8*nt,cudaMemcpyDeviceToHost);
+    std::sort(h,h+nt); auto ns=[](unsigned long long c){return c/1.38;};
+    printf("%-6s %6d %5d %12.0f %12.0f %12.0f\n",t.n,nt,w16==2?16:8,ns(h[nt/2]),ns(h[nt*9/10]),ns(h[nt-1]));
+  }
+}

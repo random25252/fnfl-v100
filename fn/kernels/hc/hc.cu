@@ -10,6 +10,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 namespace fn::hc {
 namespace {
@@ -123,6 +125,74 @@ __device__ __forceinline__ float sigmoid(float z) {
 }
 
 } // namespace
+
+// Diagnostic build (-DFNFL_HC_TL in CMAKE_CUDA_FLAGS, as FNFL_WAIT_STATS): hc_sub_kernel's per-block phase timestamps.
+// t0 the block's start; down phase: t1 staging issued, t2 activations staged, t3 dot products done, t4 moments sent;
+// up phase (blocks 0..39): t5 weights issued, t9 both cards' moments polled, t6 low-rank formed, t7 dot products
+// done, t8 mixed row sent; landers (blocks 40..71, pull and host routes): t10 the first thread's pair landed, t11 the
+// block's. Every launch adds to per-B sums and 1 us histograms (t4, t9, t11); hc_tl_dump prints them at exit
+// (stderr, "hc-tl"). hc_tl_read gives the last launch's raw clock64 values (fnfl-bench hc2-bench 0 1 tl).
+#ifdef FNFL_HC_TL
+__device__ unsigned long long g_hc_tl[72][12];
+__device__ unsigned long long g_hc_hist[3][6][48]; // [t9 of up blocks, t11 of lander blocks, t4 of up blocks][B][1 us bins]
+__device__ unsigned long long g_hc_sum[6][12]; // [B][point]: sums over up blocks of (t_i - t_0); [B][0] the launches
+#define HC_TL(i)                                                                     \
+    do {                                                                             \
+        if (threadIdx.x == 0) {                                                      \
+            const unsigned long long c_ = clock64();                                 \
+            g_hc_tl[blockIdx.x][i] = c_;                                             \
+            if ((i) == 0 && blockIdx.x == 0) {                                       \
+                atomicAdd(&g_hc_sum[B][0], 1ull);                                    \
+            } else if ((i) != 0 && (blockIdx.x < 40) == ((i) < 10)) {                \
+                atomicAdd(&g_hc_sum[B][i], c_ - g_hc_tl[blockIdx.x][0]);             \
+                if ((i) == 9 || (i) == 11 || (i) == 4) {                             \
+                    atomicAdd(&g_hc_hist[(i) == 11 ? 1 : (i) == 4 ? 2 : 0][B][min(47ull, (c_ - g_hc_tl[blockIdx.x][0]) / 1380)], 1ull); \
+                }                                                                    \
+            }                                                                        \
+        }                                                                            \
+    } while (0)
+bool hc_tl_read(unsigned long long * out) {
+    return cudaMemcpyFromSymbol(out, g_hc_tl, sizeof(g_hc_tl)) == cudaSuccess;
+}
+void hc_tl_dump() {
+    for (int dev = 0; dev < 2; ++dev) {
+        unsigned long long sum[6][12];
+        if (cudaSetDevice(dev) != cudaSuccess || cudaMemcpyFromSymbol(sum, g_hc_sum, sizeof(sum)) != cudaSuccess) {
+            continue;
+        }
+        for (int b = 1; b <= 5; ++b) {
+            if (sum[b][0] == 0) {
+                continue;
+            }
+            std::fprintf(stderr, "hc-tl dev %d B%d launches %llu:", dev, b, sum[b][0]);
+            for (int i = 1; i <= 11; ++i) {
+                std::fprintf(stderr, " t%d %.2f", i, double(sum[b][i]) / double(sum[b][0]) / (i < 10 ? 40.0 : 32.0) / 1380.0);
+            }
+            std::fprintf(stderr, "\n");
+            unsigned long long h[3][6][48];
+            if (cudaMemcpyFromSymbol(h, g_hc_hist, sizeof(h)) == cudaSuccess) {
+                for (int k = 0; k < 3; ++k) {
+                    std::fprintf(stderr, "hc-tl dev %d B%d %s us histogram:", dev, b,
+                                 k == 1 ? "t11 (landers)" : k == 2 ? "t4 (down done)" : "t9 (up polls)");
+                    for (int i = 0; i < 48; ++i) {
+                        std::fprintf(stderr, " %llu", h[k][b][i]);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+            }
+        }
+    }
+}
+void hc_tl_register() {
+    static const int once = (std::atexit(hc_tl_dump), 0);
+    (void) once;
+}
+#else
+#define HC_TL(i)
+bool hc_tl_read(unsigned long long *) {
+    return false;
+}
+#endif
 
 // Block (s, g): stream s, rows 18g .. 18g+17 over all 1,280 own features, so every moment is finished in one block
 // and no cross-block reduction is needed. The block stages its stream's x*gamma itself (18 blocks a stream repeat it,
@@ -315,6 +385,7 @@ __device__ __forceinline__ void down_phase(const typename down_param<X, Q>::type
     // Every staging load goes out before any weight load (HX13: staging queued behind the weights waited for the
     // stream). ptxas reorders loads freely but cannot move coherent loads across a barrier; .nc loads would cross it.
     __syncthreads();
+    if constexpr (FUSED) { HC_TL(1); }
     const int32_t c = warp % n_col;
     const int32_t rg = warp / n_col;
     const int32_t row0 = s * n_rows_w + g * down_rows + rg * rpw;
@@ -398,6 +469,7 @@ __device__ __forceinline__ void down_phase(const typename down_param<X, Q>::type
         }
     }
     __syncthreads();
+    if constexpr (FUSED) { HC_TL(2); }
     if constexpr (FUSED) {
         if (warp < B) { // the block's moment senders: the resets above (every thread's) before any moment store
             __threadfence();
@@ -449,6 +521,7 @@ __device__ __forceinline__ void down_phase(const typename down_param<X, Q>::type
         }
     }
     __syncthreads();
+    if constexpr (FUSED) { HC_TL(3); }
 
     if constexpr (X) {
         // Warp b sums row b's moments in HC1c's order (lane r: row 18g + r) and sends them as each block finishes
@@ -469,9 +542,15 @@ __device__ __forceinline__ void down_phase(const typename down_param<X, Q>::type
             }
             __syncthreads();
             if (warp == 0) {
-                fn::xchg::put_words(reinterpret_cast<uint32_t *>(own_mom),
-                                    reinterpret_cast<uint32_t *>(x_args(p).hc_peer), fn::xchg::hcj_run_at(vb, 0),
-                                    B * down_rows, pimg);
+                // --fnfl-hc-route pull (hc_packed bit value 2): no send; the peer's landers read the own region
+                if ((x_args(p).hc_packed & 2) != 0) {
+                    fn::xchg::put_words(nullptr, reinterpret_cast<uint32_t *>(own_mom), fn::xchg::hcj_run_at(vb, 0),
+                                        B * down_rows, pimg);
+                } else {
+                    fn::xchg::put_words(reinterpret_cast<uint32_t *>(own_mom),
+                                        reinterpret_cast<uint32_t *>(x_args(p).hc_peer), fn::xchg::hcj_run_at(vb, 0),
+                                        B * down_rows, pimg);
+                }
             }
         } else if (warp < B) {
             const int32_t b = warp;
@@ -497,8 +576,11 @@ __device__ __forceinline__ void down_phase(const typename down_param<X, Q>::type
             const uint32_t bits = fn::xchg::canonical(v);
             const int32_t vat = pk ? 4 * b + s : b * mom_w + s; // packed: the joint layout's v words
             reinterpret_cast<uint32_t *>(FUSED ? own_mom : a.mom)[vat] = bits; // F32 moment as its bits
-            reinterpret_cast<uint32_t *>(x_args(p).hc_peer)[vat] = bits;
+            if (!pk || (x_args(p).hc_packed & 2) == 0) {
+                reinterpret_cast<uint32_t *>(x_args(p).hc_peer)[vat] = bits;
+            }
         }
+        if constexpr (FUSED) { HC_TL(4); }
         if constexpr (!FUSED) {
             // release: this card's X-HC slot of the previous sublayer, whose readers (hc_up) have finished (xchg.h);
             // every row of it and both regions (R2, HC4): the previous sublayer may have had more rows than this one,
@@ -1195,6 +1277,7 @@ __device__ __forceinline__ void up_phase(const up2_args & a, const float * hres,
         w[q] = __ldcs(wrow + q * row_u4);
     }
     __syncthreads();
+    if constexpr (FUSED) { HC_TL(5); }
 
     constexpr int32_t mrow4 = (H ? n_mom_head : n_mom) / 4;
     constexpr int32_t q4 = (4 + n_stream * n_down) / 4;
@@ -1307,6 +1390,7 @@ __device__ __forceinline__ void up_phase(const up2_args & a, const float * hres,
             fn::xchg::poll<2 * (1 + n_stream)>(pp, v, a.err, fn::xchg::err_poll_hc);
 #endif
             }
+            HC_TL(9); // FUSED only (this branch)
 #pragma unroll
             for (int32_t i = 0; i < 1 + n_stream; ++i) {
                 pv[i] = v[i];
@@ -1373,6 +1457,7 @@ __device__ __forceinline__ void up_phase(const up2_args & a, const float * hres,
         }
     }
     __syncthreads();
+    if constexpr (FUSED) { HC_TL(6); }
 
     float4 a0[B], a1[B];
 #pragma unroll
@@ -1409,6 +1494,7 @@ __device__ __forceinline__ void up_phase(const up2_args & a, const float * hres,
         }
     }
     __syncthreads();
+    if constexpr (FUSED) { HC_TL(7); }
 
     // Warp b finishes row b (lane f: feature c0 + f, arm 0's order), sends the run's F32 values (X-HMIX, canonical
     // bits, xchg.h) into the peer's slot and this card's, then quantizes the run (act.h, lanes 0..7) and sends its
@@ -1443,6 +1529,7 @@ __device__ __forceinline__ void up_phase(const up2_args & a, const float * hres,
         fn::act::quantize_run8(real ? v : zero4, packed, ds);
         fn::xchg::hmix_put_run(a.hmix_own, a.hmix_peer, b, a.card * n_runs_card + g, packed, ds, real);
     }
+    if constexpr (FUSED) { HC_TL(8); }
 }
 
 template <int B, bool H> __global__ void __launch_bounds__(n_thread_up, 1) hc_up3_kernel(const up2_args a) {
@@ -1460,12 +1547,48 @@ struct sub_params {
     const float * hx;
     const float * hpost;
     float * own; // this card's own region of the X-HC slot (xchg.h hc_own_at)
+    // --fnfl-hc-route pull (hc_packed bit value 2: the peer's own region) or host (4: this card's host slot): the
+    // words blocks 40..71 land into u.hc_ring
+    float * land_src = nullptr;
 };
 
 template <int B, bool H>
 __global__ void __launch_bounds__(n_thread_up, 1) hc_sub_kernel(const sub_params p, int32_t mode) {
+    HC_TL(0);
     if ((mode & 1) != 0) {
         down_phase<B, shipped_depth_down, true, H, false, true, n_thread_up>(p.d, p.own, blockIdx.x);
+    }
+    if constexpr (!H) {
+        if ((mode & 2) != 0 && blockIdx.x >= n_up_block && (p.u.hc_packed & 6) != 0) {
+            // --fnfl-hc-route pull or host: blocks 40..71 (idle in the up phase) land the peer's moments, the joint
+            // layout's rows 0 .. B - 1 (the v words, then each down block's run of 18 B words), from land_src into
+            // this card's slot, one 8-byte pair a thread, coalesced; the up phase polls them there as before. Pull
+            // reads the peer's own region of its slot (the peer resets it with its slot); host reads this card's host
+            // slot, which the peer's down phase wrote, and resets each pair after landing it.
+            constexpr int32_t v_pairs = 2 * B, run_pairs = 9 * B;
+            constexpr int32_t n_pairs = v_pairs + fn::xchg::hcj_blocks * run_pairs;
+            static_assert(n_pairs <= (n_block - n_up_block) * n_thread_up, "a pair a lander thread");
+            const int32_t t = (blockIdx.x - n_up_block) * n_thread_up + threadIdx.x;
+            if (t < n_pairs) {
+                const int32_t w = t < v_pairs ? 2 * t
+                                              : fn::xchg::hcj_run_at((t - v_pairs) / run_pairs, 0) +
+                                                    2 * ((t - v_pairs) % run_pairs);
+                uint2 * src = reinterpret_cast<uint2 *>(p.land_src + w);
+                const uint2 v = fn::xchg::poll2(src, p.u.err, fn::xchg::err_poll_hc);
+                asm volatile("st.global.v2.u32 [%0], {%1, %2};" ::"l"(p.u.hc_ring + w), "r"(v.x), "r"(v.y)
+                             : "memory");
+                if ((p.u.hc_packed & 4) != 0) { // the host route: the receiver resets its host slot
+                    fn::xchg::reset2(src);
+                }
+            }
+#ifdef FNFL_HC_TL
+            if (threadIdx.x == 0) { // lander blocks: when the first thread's pair landed (t10), the block's (t11)
+                atomicAdd(&g_hc_sum[B][10], clock64() - g_hc_tl[blockIdx.x][0]);
+            }
+            __syncthreads();
+            HC_TL(11);
+#endif
+        }
     }
     if ((mode & 2) != 0 && blockIdx.x < n_up_block) {
         up_phase<B, H, true>(p.u, p.hres, p.hx, p.hpost, p.own, blockIdx.x, gridDim.x == n_block ? 0u : ~0u);
@@ -2623,6 +2746,9 @@ template <int B> bool launch_up2(up_arm arm, const up2_args & a, cudaStream_t st
 template <int B, bool H> bool launch_sub(const sub_params & p, int32_t mode, cudaStream_t stream) {
     sub_params q = p;
     int32_t m = mode;
+#ifdef FNFL_HC_TL
+    hc_tl_register();
+#endif
     void * args[] = {&q, &m};
     return cudaLaunchCooperativeKernel(reinterpret_cast<const void *>(hc_sub_kernel<B, H>), dim3(n_block),
                                        dim3(n_thread_up), args, sub_dyn_bytes<B>(), stream) == cudaSuccess;
@@ -3123,11 +3249,42 @@ bool ready(int32_t rows, const ready_args & a, void * stream) {
     return cudaPeekAtLastError() == cudaSuccess;
 }
 
+namespace {
+std::atomic<int32_t> g_pull{-1}; // -1: unset (FNFL_HC_PULL decides on first use)
+} // namespace
+
+void set_hc_pull(bool on) {
+    g_pull.store(on ? 1 : 0);
+}
+
+bool hc_pull() {
+    int32_t cur = g_pull.load(std::memory_order_relaxed);
+    if (cur < 0) {
+        const char * e = std::getenv("FNFL_HC_PULL");
+        const int32_t want = e != nullptr && e[0] == '1' ? 1 : 0;
+        if (g_pull.compare_exchange_strong(cur, want) && want != 0) {
+            std::fprintf(stderr, "fn::hc: X-HC pulled by the receiver (FNFL_HC_PULL=1)\n");
+        }
+        return want != 0;
+    }
+    return cur != 0;
+}
+
 bool sub(int32_t rows, int32_t mode, const sub_args & a, void * stream) {
     if (!sub_ok(rows, mode, a, stream, false)) {
         return false;
     }
-    const sub_params p = sub_of(a);
+    sub_params p = sub_of(a);
+    if (a.hc_packed != 0 && a.hc_host_peer != nullptr && a.hc_host_in != nullptr) { // --fnfl-hc-route host
+        p.d.hc_peer = a.hc_host_peer;
+        p.land_src = a.hc_host_in;
+        p.d.hc_packed |= 4;
+        p.u.hc_packed |= 4;
+    } else if (a.hc_packed != 0 && hc_pull()) { // --fnfl-hc-pull: packed only
+        p.land_src = a.hc_peer + fn::xchg::hc_own_at;
+        p.d.hc_packed |= 2;
+        p.u.hc_packed |= 2;
+    }
     cudaStream_t st = static_cast<cudaStream_t>(stream);
     switch (rows) {
         case 1:

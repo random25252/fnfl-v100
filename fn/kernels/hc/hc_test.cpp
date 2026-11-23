@@ -900,6 +900,10 @@ bool run_hc2_case(card2 *             c[2],
             for (int32_t r = 0; r < 2 && ok && mode != 0; ++r) {
                 fn::hc::sub_args sa = sub_args_of(*c[r], rg, r, n, false);
                 sa.hc_packed = packed ? 1 : 0; // --fnfl-hc-packed
+                if (packed && rg.host_hc(r, sl) != nullptr) { // --fnfl-hc-route host (FNFL_HC_HOST=1)
+                    sa.hc_host_in = rg.host_hc(r, sl);
+                    sa.hc_host_peer = rg.host_hc(1 - r, sl);
+                }
                 ok = cuda_ok(cudaSetDevice(c[r]->dev), "cudaSetDevice") && fn::hc::sub(B, mode, sa, launch_stream(c, r));
             }
         }
@@ -921,6 +925,25 @@ bool run_hc2_case(card2 *             c[2],
             fprintf(stderr, "hc-test: %s sublayer %d not enqueued: %s\n", label.c_str(), n,
                     cudaGetErrorString(cudaGetLastError()));
         }
+    }
+    if (ok && fused && packed && rg.host_hc(0, 0) != nullptr) {
+        // the host route: every host X-HC word is back at the sentinel once each sublayer's landing has run
+        for (int32_t r = 0; r < 2 && ok; ++r) {
+            ok = cuda_ok(cudaSetDevice(c[r]->dev), "cudaSetDevice") &&
+                 cuda_ok(cudaStreamSynchronize(launch_stream(c, r)), "host route sync");
+        }
+        int64_t bad = 0;
+        for (int32_t r = 0; r < 2 && ok; ++r) {
+            for (int32_t sl = 0; sl < fn::xchg::n_slot; ++sl) {
+                const uint32_t * h = reinterpret_cast<const uint32_t *>(rg.host_hc(r, sl));
+                for (int32_t i = 0; i < fn::xchg::hc_own_at; ++i) {
+                    bad += h[i] != fn::xchg::sentinel ? 1 : 0;
+                }
+            }
+        }
+        printf("hc-test %s host X-HC slots back at the sentinel after landing (both cards, every word): %s\n",
+               label.c_str(), bad == 0 ? "yes" : "NO");
+        ok = ok && bad == 0;
     }
     for (int32_t n = 0; n < n_sub && ok && !fused; ++n) {
         const int32_t sl = n % fn::xchg::n_slot;

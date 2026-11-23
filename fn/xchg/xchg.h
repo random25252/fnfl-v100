@@ -348,6 +348,9 @@ class rings {
     // hc_up writes and land_hmix copies into slot(card, msg::hmix, s); null when the route is off, for a view, or
     // when both cards are one device
     float * host_hmix(int32_t card, int32_t s) const;
+    // --fnfl-hc-route host (hc.h sub): card's X-HC receive slot s in pinned host memory (the peer region's hc_own_at
+    // words, the joint layout), which the peer's down phase writes and this card's sub launch lands; null when off
+    float * host_hc(int32_t card, int32_t s) const;
     uint32_t * err(int32_t card) const { return err_[card]; }
 
     // Synchronous (callers have drained both devices): refill every slot with the sentinel (X-HMIX's code words with
@@ -360,6 +363,7 @@ class rings {
     int32_t dev_[2] = {-1, -1};
     float * buf_[2] = {nullptr, nullptr}; // n_msg x n_slot slots a card
     float * hbuf_[2] = {nullptr, nullptr}; // the host route's n_slot X-HMIX slots a card, pinned host memory
+    float * hcbuf_[2] = {nullptr, nullptr}; // the X-HC host route's n_slot slots a card (hc_own_at words each)
     uint32_t * err_[2] = {nullptr, nullptr};
     bool ok_ = false;
     bool owns_ = true;
@@ -381,6 +385,9 @@ void set_hmix_host(bool on);
 bool hmix_host_enabled();
 void set_hc_packed(bool on);
 bool hc_packed_enabled();
+// --fnfl-hc-route host (FNFL_HC_HOST=1): X-HC through pinned host memory, landed inside hc::sub (needs packed)
+void set_hc_host(bool on);
+bool hc_host_enabled();
 bool land_hmix(int32_t rows, int32_t peer_half, float * host, float * slot, uint32_t * err, void * stream);
 
 // ---- FMU2: the joint round's exchange memory ----

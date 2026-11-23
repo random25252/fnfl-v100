@@ -17,11 +17,12 @@ squeezing more decode later, ranked.
 - Platform changes had no effect: driver P2P mode (`RMForceP2PType=1`), C-states and governor, uncore clock pinned at
   2.4 GHz. Moving both cards to one root port isn't possible here because of cooling.
 
-## What was done: two server switches (2026-11-23)
+## What was done: the exchange switches (2026-11-23, X-HC route 2026-11-24)
 
 | Server flag (fnfl-drive: environment) | What it does | Code |
 |---|---|---|
 | `--fnfl-hmix-route host` (`FNFL_HMIX_HOST=1`) | X-HMIX (the mixed row, 6,720 B a row) goes through pinned host memory. The sender writes the receiver's host slot; a small landing kernel on the receiver polls each 16-byte group once, copies it into the device slot the consumers already poll, and resets the host group. | `fn/xchg/xchg.{h,cu}` (`rings::host_hmix`, `land_hmix`, `set_hmix_host`), `hc_phase` in `fn/model/layer.cpp` |
+| `--fnfl-hc-route host` (`FNFL_HC_HOST=1`; `pull`: `FNFL_HC_PULL=1`), with packed | X-HC off peer writes (2026-11-24). host: the sender's down phase writes its moments into the receiver's pinned host slot; pull: nobody sends, and the receiver reads the sender's own copy over the peer mapping. Either way the 32 blocks of the fused HC launch that are idle in its up phase land the moments, one coalesced 8-byte pair a thread, into the device slot the up phase already polls (host also resets the host words). [Measured below](#hc-in-decode-measured-inside-the-kernel-2026-11-24): +4.4% (host), +2.6% (pull). | the landers in `hc_sub_kernel`, `sub` and `sub_params::land_src` in `fn/kernels/hc/hc.cu`; `rings::host_hc`, `set_hc_host` in `fn/xchg`; `set_hc_pull` in `fn/kernels/hc/hc.h`; `hc_phase` in `fn/model/layer.cpp` |
 | `--fnfl-hc-packed on` (`FNFL_HC_PACKED=1`) | X-HC (the moments) in the joint layout (`xchg.h hcj_run_at`): each down block gathers its moments of every row in shared memory and one warp sends them as one contiguous run; the reader polls each 16-byte group as two 8-byte pairs at remapped addresses. Fused, non-head `hc::sub` only. | `down_phase`/`up_phase` in `fn/kernels/hc/hc.cu`, `poll_mixed`/`hcp_at` in `fn/xchg/xchg.cuh`, `hc_packed` in `fn/kernels/hc/hc.h`, `set_hc_packed` in `fn/xchg` |
 
 Both default off, so the engine behaves as upstream unless asked. The server sets them from its flags before loading
@@ -91,7 +92,7 @@ exchange stall accounts for most of that difference. Draft acceptance is about 1
 
 ## What to try next for decode: the shortlist (2026-11-23)
 
-Ranked by expected gain against effort. Today: ~183 tok/s on `bench.py` (3 proposals, both switches, 2× V100). The
+Ranked by expected gain against effort. Today: ~194 tok/s on `bench.py` (3 proposals, the exchange switches with `--fnfl-hc-route host`, 2× V100; 183 before the X-HC route of 2026-11-24). The
 gains are estimates from other engines' reports and this doc's measurements, not measured on FNFL. The details are in
 the sections below.
 
@@ -99,7 +100,7 @@ the sections below.
 |---|---|---|---|---|
 | 1 | **Lookup (n-gram) drafts** within the 4-proposal limit, used when the context has a match | +30–60% on edit-heavy turns (agents rewriting files), ~0 on new prose; maybe +10–25% over an agentic session | medium (draft source, acceptance, tests) | sFNX, QEngine ([other engines](#other-engines-surveyed-2026-11-23)) |
 | 2 | **Adaptive draft count** from the draft head's confidence or recent acceptance (2–4 a step) | +3–8% | small–medium | QEngine (3–5 drafts from confidence), sFNX (acceptance-sized) |
-| 3 | **Host path for every decode exchange** (X-HC, X-A, X-F as well as X-HMIX), chosen at startup by timing real decode steps on each path, cached | +3–5% here (exchanges are ~8–9% of a step); also makes the right choice on other platforms automatically | medium | QEngine; this doc's measurements |
+| 3 | **Host path for every decode exchange** (X-HC, X-A, X-F as well as X-HMIX), chosen at startup by timing real decode steps on each path, cached | +3–5% here (exchanges are ~8–9% of a step); also makes the right choice on other platforms automatically. **X-HC done 2026-11-24** (`--fnfl-hc-route host`, +4.4%); X-A and X-F left, and the automatic choice | medium | QEngine; this doc's measurements |
 | 4 | **The DFlash2 drafter** ([incoai/Qwen3.8-Flash-Next-DFlash2](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2)): 8-token blocks instead of the MTP chain | ReVolta reports +30% on English code (4× V100 NVLink); with FNFL's 5-row verify limit maybe +10–20% on code, less on Chinese or prose | large (a new drafter architecture in the engine) | ReVolta |
 | 5 | **Wider verify windows** (more than 5 rows) to use long lookup or DFlash2 drafts in full | lifts the ceiling of 1 and 4 on edits; on its own, nothing | large (`max_rows` = 5 is baked into the exchange layouts and kernels) | sFNX (16-row windows) |
 | 6 | Exchange shaving ([ranked ideas below](#ideas-for-later-ranked-by-expected-payoff), items 1–3) | +3–6% in total | medium | this doc |
@@ -131,6 +132,55 @@ uses ~25–30% of the memory bandwidth. Prefill, by comparison, reaches ~50% of 
 bigger drafts. The fastest published two-card numbers for this model are QEngine's 201–248 tok/s (2× RTX 3090) and
 sFNX's ~140–160 on new code.
 
+**Phase 0, measured (2026-11-24).** Swift, 3 proposals, the recommended flags, three greedy 300-token requests: two
+short prompts (one code continuation at 3.6 tokens a step, one at 1.9) and one at 30K tokens of context.
+- **Untraced, from the server log:** a step takes 14.4–14.8 ms at short context and 15.8 ms at 30K: the draft chain
+  ~1.15 ms, the verify pass ~13.3 ms, the catch-up ~0.4 ms.
+- **The tools:** Nsight Systems with node-level graph tracing (`--cuda-graph-trace=node`), which adds ~9% to a step, so
+  its times are proportions; the wait counters (`build-wait`, rebuilt from the current code); `fnfl-bench hc-bench`
+  for HC on one card with no exchange.
+
+Kernel time a step (GPU 0, traced ~16.6 ms; GPU 0 runs a kernel 96% of the step, GPU 1 90%; ~817 kernels a step a
+card):
+
+| Family | ms a step | Calls a step | Bandwidth floor | Reading |
+|---|---|---|---|---|
+| Dense products (`product_kernel`) | 4.19 | 165 | ~2.1 ms (~2.15 GB) | ~50% of HBM bandwidth |
+| **HC sublayers (`hc_sub`)** | **4.18** (GPU 1: 3.29) | 97 | **~0.6 ms** (~0.63 GB of BF16 HC weights) | 43 µs a call (GPU 1: 34); see below |
+| Experts (`gate_up_kernel_u`, `down_kernel`) | 3.51 | 99 | ~1.7 ms (≤ 40 distinct experts a layer at 4 rows) | ~50% of HBM bandwidth |
+| Exchange kernels (`recv_add`, `land_hmix`, `send_half`, `recv`, `recv_select`) | ~1.9 | ~300 | — | hand-off work and waiting, 2–8 µs a call |
+| QSA attention (`attend`) | 0.49 at short context, 0.73 at 30K | 15 | | |
+| GDN core | 0.43 | 36 | | |
+| The draft's HC, the head, the sampler, the rest | ~1.9 | | | |
+
+**Waits** (wait counters, both cards alike):
+- X-HC: ~1.0–1.1 ms a step (90% of polls wait, ~11–13 µs each).
+- X-A and X-F: ~0.2–0.35 ms.
+- X-HMIX and X-DRAFT-IN: negligible.
+
+**HC is the outlier.** One card's half of a sublayer at 3 rows takes 17.5 µs on its own, as separate down and up
+kernels with no exchange (`fnfl-bench hc-bench`: `ctx_card_B3`), against a ~7 µs bandwidth floor. In decode the fused
+sublayer takes 34–43 µs. Roughly:
+- ~12 µs is the X-HC wait;
+- ~17 µs is the work itself, at ~2.5× its floor;
+- the rest is the fused kernel's own overhead (grid barriers, polling, sends).
+
+*Corrected by the in-kernel timeline the same day* ([below](#hc-in-decode-measured-inside-the-kernel-2026-11-24)): at
+the verify's 4 rows the X-HC wait was ~13–17 µs a call and bimodal (about half the calls hit the write collapse). The
+work was ~18 µs a call: ~9.7 µs down and ~8.3 µs up.
+
+**What it says, against the ~4.5 ms floor of the bytes above:**
+- **HC sublayers:** −1.5 to −2.5 ms a step. A leaner fused kernel near its 7 µs of reads, and less X-HC wait (pull
+  instead of push, or overlap the up phase's independent part).
+- **The ~300 small exchange kernels a step:** −~1 ms. Fold the landing and the receive-and-add into the kernels that
+  consume them.
+- **Dense and expert products at ~50% of bandwidth:** −~1.5–2 ms together, with better small-batch products and fewer,
+  larger launches (165 dense launches a step).
+- **The draft:** ~1.5 ms with its catch-up.
+
+Together ~14.6 → ~10 ms a step, ~265 tok/s at today's acceptance: phases 2–3 of the path below, now with measured
+targets. **HC first:** it is the largest gap and the best understood.
+
 **The path, in order** (speed = tokens a step ÷ step time):
 
 | Phase | What | Lever | Expected after it | Effort |
@@ -149,12 +199,73 @@ directly.
 **Start with phase 0**, which is cheap and turns phase 3's estimates into measurements. Then phase 1, the largest
 visible gain for the least work, especially in agent use.
 
+## HC in decode, measured inside the kernel (2026-11-24)
+
+**The method.** A diagnostic build (`-DFNFL_HC_TL` in `CMAKE_CUDA_FLAGS`, as the wait counters) timestamps each block
+of the fused HC launch (`hc_sub_kernel`) at its phase boundaries with `clock64`. Every launch adds to per-row-count sums
+and 1 µs histograms, and the process prints them at exit (`hc-tl` lines on stderr). The run: the server, three greedy
+300-token requests (`decreq.py`: two short prompts and one at 30K), ~31,500 calls at 4 rows. The numbers are µs from
+each block's start, means over the 40 up blocks:
+
+| Phase (4 rows) | push (before), GPU 0 / 1 | host route, GPU 0 / 1 |
+|---|---|---|
+| Down: staging (activations in, x out) | 5.7 / 5.6 | 5.7 / 5.6 |
+| Down: products (3.3 MB of BF16 weights), moments sent | 9.6 / 9.5 | 9.7 / 9.7 |
+| Up: both cards' moments polled (**X-HC**) | **26.7 / 23.4** | **21.0 / 17.9** |
+| Up: low-rank formed | 28.9 / 25.6 | 23.1 / 19.8 |
+| Up: products (3.3 MB) | 33.1 / 29.7 | 27.2 / 23.9 |
+| Up: mixed row out, end | 35.0 / 31.6 | 29.1 / 25.8 |
+
+**What it showed:**
+- The moments wait was the largest piece, and the same on both cards, so it was the link's latency rather than one
+  card lagging.
+- With push, the poll's histogram is bimodal. About half the calls finish ~14 µs in, close to ideal (the slowest sender
+  block finishes its moments at ~12 µs, p99 13). The other half wait until ~40 µs: the peer-write collapse.
+- On one card with the moments pre-filled, the same poll ends ~4 µs after the up phase starts (`hc2-bench 0 1 tl`).
+
+**What was tried:**
+
+| Change | Result |
+|---|---|
+| **Host route** (`--fnfl-hc-route host`): sender writes host memory, the idle up-phase blocks land it | moments at ~17 µs, steady; **194.2 tok/s vs 186.0 on `bench.py` (+4.4%), faster on all 12 rows**; step medians −0.5 to −0.75 ms |
+| **Pull** (`--fnfl-hc-route pull`): the receiver's idle blocks read the sender's own copy | moments at ~18–19 µs, steady; 190.9 tok/s (+2.6%) |
+| L2 prefetch of both weight matrices at kernel start | no change (cold bench); dropped |
+| Rolled weight-row loops (code −25%; Nsight Compute showed ~40% of stalls as instruction fetch, cold bench) | −1–2 µs a call in the cold bench, nothing measurable in decode; dropped |
+
+All three routes gave bitwise-identical tokens (content hashes of the three requests), `hc2-test` passes on each (284
+bitwise checks, plus a new check that every host X-HC word is back at its sentinel). `xchg-test`, and `model-dry` in
+graph, eager and spec, pass with the host route.
+
+**Why host beats pull:** read latency from device 0 (`docs/iq3s-tools/p2p/readlat.cu.txt`), coalesced 8-byte loads:
+
+| Loads in flight | Peer card memory | Pinned host memory |
+|---|---|---|
+| 1 | 1.24 µs | 0.78 µs |
+| 2,600 (one X-HC message at 4 rows) | 1.86 µs | 1.61 µs |
+
+Uncoalesced 8-byte loads are much worse (~11.7 µs peer, ~9 µs host at 2,600 in flight), so the landers take
+consecutive pairs.
+
+**What is left in HC, a call at 4 rows with the host route (~26–29 µs against a ~7 µs read floor):**
+- *Moments wait*, ~7–11 µs after the up phase starts, against ~4 µs with the moments already local. The rest is the
+  cards' start offset, the host write and the landers' poll pass. Small further gains only.
+- *Staging*, 5.6 µs before the first product. 18 blocks of each stream re-stage the same activations (~2.9 MB of L2
+  reads at 4 rows), while the weight loads issued at the same time flood DRAM.
+- *Up phase on 40 of 72 SMs*: its 3.3 MB run on 40 SMs at ~4 µs, the low-rank formation (~2 µs, precise `sqrtf`,
+  `expf` and divisions fixed by bitwise) and the finish (~1.9 µs).
+- Next HC steps, in order: stage the activations once a stream (or from fewer blocks) and start the products
+  earlier; spread the up products over all 72 SMs (the run-aligned quantize then needs a cross-block finish, as HC3's
+  72-block shape had); fold the landing into fewer, larger reads. Maybe another 5–8 µs a call, ~0.5–0.8 ms a step
+  (+4–5%).
+
 ## Ideas for later, ranked by expected payoff
 
 These rank the exchange and kernel work. For code-editing work, **n-gram drafting** (from sFNX, in the next section)
 probably outweighs all of them. Try it before items 1–6.
 
-1. **Shave X-HC further (about 1.0–1.2 ms a step left; maybe +3–5%).** Part of it can't be removed: each card waits for
+1. **Shave X-HC further (about 1.0–1.2 ms a step left; maybe +3–5%).** *Done in part 2026-11-24: pull and the host
+   route ([measured above](#hc-in-decode-measured-inside-the-kernel-2026-11-24)); host gave +4.4%. The notes below
+   are from before.* Part of it can't be removed: each card waits for
    the other's down phase to finish, plus a couple of microseconds of PCIe latency. Options:
    - **Fewer, larger writes:** the fused kernel is cooperative and already has a grid barrier, so a few blocks could
      gather all 72 runs and send one or two large contiguous writes.
@@ -250,7 +361,7 @@ are in [`prefill-headroom.md`](prefill-headroom.md).
 | [Strata-V100](https://github.com/jmnargi/Strata-V100) | 2× V100-**16GB** (one card at x4) | 62–81 | ~1,000–2,100 | Strata fork; streams experts |
 | [qwen38-flash-next-2x3090](https://github.com/DominikBucko/qwen38-flash-next-2x3090) (vLLM) | 2× RTX 3090 + 128 GB RAM | 104–111 | up to 4,191 (131K) | experts in RAM |
 | [sFNX](https://github.com/johnfink8/sfnx) | 3× (2×) V100-32GB | 200–229 (137–163), new code | 3,373 (~2,710) | the previous section |
-| **FNFL here** | **2× V100-32GB** | **~183** (`bench.py` mix) | ~3,560 | Swift IQ3_S, all in VRAM |
+| **FNFL here** | **2× V100-32GB** | **~194** (`bench.py` mix, 2026-11-24) | ~3,560 | Swift IQ3_S, all in VRAM |
 
 Also seen, not useful here:
 - [GooseLLM](https://github.com/haohervchb/GooseLLM) and [sglang-V100](https://github.com/haohervchb/sglang-V100):
@@ -298,8 +409,17 @@ Decode ideas from the survey (ranked in the shortlist above):
     both messages crossing against X-HC only. Apply it with `git apply`, then build the `fnfl-bench` target. Its
     `xhc_none` point still sends to sinks on the *peer*, so it isn't a no-exchange bound. For that bound, point the
     sinks at the card's own memory.
+  - `readlat.cu.txt`: read latency from one card to local, peer and pinned host memory, by loads in flight (the
+    X-HC route choice, 2026-11-24).
   - `gpumon.sh FILE`: the GPU telemetry logger (temperature, HBM temperature, power, clocks, throttle reasons, every
     500 ms). Run it during every benchmark.
+- **The HC timeline** (2026-11-24): a build with `-DCMAKE_CUDA_FLAGS=-DFNFL_HC_TL` prints per-phase means and
+  histograms of the fused HC launch at exit (`hc-tl` lines; [above](#hc-in-decode-measured-inside-the-kernel-2026-11-24)).
+  `fnfl-bench hc2-bench 0 1 tl` (same build) times card 0's pre-filled launch cold at 1, 3 and 4 rows.
+- **HC benches** (`fnfl-bench hc2-bench 0 1 MODE`): `cold` now includes 4 rows (the verify size); `FNFL_BENCH_COLD=l2`
+  keeps the instruction cache warm (the L2 flush only) and `=i` the reverse; `ncu-fused4` runs card 0's pre-filled
+  fused launch at 4 rows after a cold flush, for `sudo -n /opt/cuda/nsight_compute/ncu --set full -k regex:hc_sub`.
+  A cold launch at 4 rows takes ~33 µs alone, ~19 µs with the instruction cache warm.
 - **Telemetry:** GPU 0 runs 4–7 °C hotter than GPU 1 (its cooling), peaking at about 71 °C core and 73 °C HBM on the
   full bench. During long prompts it touches its 250 W software power cap (`0x4`, not thermal) for about 20–40 s, at
   1372 MHz instead of 1380. There has been no thermal throttling.

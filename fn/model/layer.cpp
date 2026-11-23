@@ -369,6 +369,10 @@ bool hc_phase(card_ctx & c, const hc_module & h, int32_t set, const float * hres
         if (host_in != nullptr) {
             a.hmix_peer = rg.host_hmix(1 - r, s);
         }
+        if (a.hc_packed != 0 && rg.host_hc(r, s) != nullptr) { // --fnfl-hc-route host (hc.h sub_args)
+            a.hc_host_in = rg.host_hc(r, s);
+            a.hc_host_peer = rg.host_hc(1 - r, s);
+        }
         if (!fn::hc::sub(rows, fused ? 3 : part + 1, a, c.stream)) {
             return fail(err, "hc sub");
         }

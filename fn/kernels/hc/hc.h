@@ -226,11 +226,22 @@ struct sub_args {
     // (xchg.h hcj_run_at), each down block's moments one contiguous run, so the peer link sees 72 writes of up to
     // 360 bytes instead of 360 of 72; both cards must agree. 0: the lone layout
     int32_t hc_packed = 0;
+    // --fnfl-hc-route host (with hc_packed): the peer's host X-HC slot (the down phase sends there instead of hc_peer)
+    // and this card's (blocks 40..71 land it into hc_ring and reset it); both null: the peer route
+    float * hc_host_peer = nullptr;
+    float * hc_host_in = nullptr;
 };
 
 // Enqueue on stream; false, with nothing enqueued, for an unsupported row count or mode (1, 2 or 3) or a null or
 // misaligned pointer; false after a failed launch submission.
 bool sub(int32_t rows, int32_t mode, const sub_args & a, void * stream);
+// --fnfl-hc-pull (env FNFL_HC_PULL=1), with --fnfl-hc-packed: sub's X-HC by pull. No card sends its moments; the
+// receiver's blocks 40..71 (idle in the up phase) poll the peer's own region of its slot over the peer mapping and land
+// the words in this card's slot, where the up phase polls them. Both cards must agree. Bitwise the same.
+void set_hc_pull(bool on);
+bool hc_pull();
+// Diagnostic build (-DFNFL_HC_TL): the last sub launch's per-block phase clocks [72][12] (hc.cu); false otherwise
+bool hc_tl_read(unsigned long long * out);
 bool head_sub(int32_t rows, int32_t mode, const sub_args & a, void * stream);
 
 // ---- FMU2: a joint round's sublayer, lanes of max_rows rows, one launch ----

@@ -76,7 +76,9 @@ FNFL splits every layer in half rather than giving each card half the layers. Bo
 
 On some platforms, GPU-issued writes into the other card collapse once many are in flight. The development machine's X299 board is one: there, peer writes drop to about 1 GB/s past about 64 KB, and fragmented writes suffer most. Two server switches work around it, with bitwise-identical outputs:
 - `--fnfl-hmix-route host` sends the mixed row (X-HMIX) through pinned host memory, with a landing kernel on the receiver;
-- `--fnfl-hc-packed on` sends each HC block's moments (X-HC) as one contiguous run.
+- `--fnfl-hc-packed on` sends each HC block's moments (X-HC) as one contiguous run;
+- `--fnfl-hc-route host` (or `pull`) moves X-HC off peer writes as well: the sender writes pinned host memory (or the
+  receiver reads the sender's memory), and the HC launch's blocks that are idle in its up phase land the moments.
 
 [`decode-headroom.md`](decode-headroom.md) has the measurements, where a step's time goes now, and the ideas left for more decode speed.
 

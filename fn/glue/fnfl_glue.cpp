@@ -5,6 +5,7 @@
 #include "fn/fnfl.h"
 #include "fn/loader/run_load.h"
 #include "fn/kernels/dense/dense_prompt.h"
+#include "fn/kernels/hc/hc.h"
 #include "fn/kernels/hc/hc_prompt.h"
 #include "fn/model/graph_rec.h"
 #include "fn/model/kv_pool.h"
@@ -475,15 +476,26 @@ fnfl_engine * fnfl_load(const fnfl_load_params & params, fnfl_model_meta & meta,
     }
     fn::xchg::set_hmix_host(params.config.hmix_route == "host");
     fn::xchg::set_hc_packed(params.config.hc_packed);
+    const std::string & hc_route = params.config.hc_route;
+    if (!hc_route.empty() && hc_route != "peer" && hc_route != "pull" && hc_route != "host") {
+        err = "--fnfl-hc-route is peer, pull or host, not '" + hc_route + "'";
+        return nullptr;
+    }
+    if (!hc_route.empty() && hc_route != "peer" && !params.config.hc_packed) {
+        err = "--fnfl-hc-route " + hc_route + " needs --fnfl-hc-packed on";
+        return nullptr;
+    }
+    fn::xchg::set_hc_host(hc_route == "host");
+    fn::hc::set_hc_pull(hc_route == "pull");
     fn::model::graph_copy_skip(params.config.graph_copy_skip);
     fn::model::prompt_graphs(params.config.prompt_graphs);
     fn::hc::set_hc_up_staged(params.config.hc_up_staged);
     fn::dense::set_dense_grouped(params.config.dense_grouped);
     fprintf(stderr,
-            "FNFL: --fnfl-hmix-route %s; --fnfl-hc-packed %s; --fnfl-graph-copy-skip %s; --fnfl-prompt-graphs %s; "
-            "--fnfl-hc-up-staged %s; --fnfl-dense-grouped %s\n",
+            "FNFL: --fnfl-hmix-route %s; --fnfl-hc-packed %s; --fnfl-hc-route %s; --fnfl-graph-copy-skip %s; "
+            "--fnfl-prompt-graphs %s; --fnfl-hc-up-staged %s; --fnfl-dense-grouped %s\n",
             params.config.hmix_route.empty() ? "peer (default)" : params.config.hmix_route.c_str(),
-            params.config.hc_packed ? "on" : "off (default)", params.config.graph_copy_skip ? "on" : "off (default)",
+            params.config.hc_packed ? "on" : "off (default)", hc_route.empty() ? "peer (default)" : hc_route.c_str(), params.config.graph_copy_skip ? "on" : "off (default)",
             params.config.prompt_graphs ? "on (default)" : "off", params.config.hc_up_staged ? "on" : "off (default)",
             params.config.dense_grouped ? "on" : "off (default)");
     fn::loader::run_load_report lr;

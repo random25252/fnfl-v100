@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -21,6 +22,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace fn::hc {
+bool hc_tl_read(unsigned long long * out); // hc.h; the diagnostic build only (-DFNFL_HC_TL)
+}
 
 namespace {
 
@@ -334,7 +339,12 @@ struct card2 {
     static constexpr size_t n_hc_slot = fn::xchg::slot_words(fn::xchg::msg::hc);
     dev_buf<float> pre_sub{size_t(n_sub) * n_hc_slot}, pre_sub_init{size_t(n_sub) * n_hc_slot};
 
-    bool cold() const { return fn::dense::cold_flush(flush.p, flush_bytes, st) && fn::dense::cold_icache(evict.p, st); }
+    // FNFL_BENCH_COLD=l2: the L2 flush only (instruction cache left warm); =i: the eviction only
+    bool cold() const {
+        const char * e = std::getenv("FNFL_BENCH_COLD");
+        const bool l2 = e == nullptr || e[0] != 'i', ic = e == nullptr || e[0] != 'l';
+        return (!l2 || fn::dense::cold_flush(flush.p, flush_bytes, st)) && (!ic || fn::dense::cold_icache(evict.p, st));
+    }
 
     card2(int32_t d, bool with_q8, bool with_mix = false) : dev(d), guard(d), q8(with_q8), mix(with_mix) {
         if (!cuda_ok(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking), "stream") ||
@@ -903,7 +913,7 @@ int fnfl_hc_bench(int device) {
 
 int fnfl_hc2_bench(int dev0, int dev1, const char * mode) {
     const std::string m = mode;
-    if (m != "all" && m != "ncu" && m != "nsys" && m != "q8" && m != "cold" && m != "ncu-up" && m != "ncu-fused" &&
+    if (m != "all" && m != "ncu" && m != "nsys" && m != "q8" && m != "cold" && m != "ncu-up" && m != "ncu-fused" && m != "ncu-fused4" && m != "tl" &&
         m != "ttts4") {
         fprintf(stderr, "hc2-bench: MODE is all, ncu, ncu-up, ncu-fused, nsys, q8, cold or ttts4\n");
         return 2;
@@ -1137,6 +1147,60 @@ int fnfl_hc2_bench(int dev0, int dev1, const char * mode) {
             ok = ok &&
                  time_point2(bn, "ncu_pre_up_armA_B3", "hc_up2 arm A, pre-filled X-HC (card 0 only)", "A", 3, card0, 1,
                              1, [&bn](int32_t r, int32_t n) { return bn.up(3, r, n, up_arm::staged, true); });
+        } else if (m == "tl") {
+            // hc_sub_kernel's per-block phase timestamps (the diagnostic build, -DFNFL_HC_TL), card 0 pre-filled, cold
+            const bool c0u[2] = {true, false};
+            unsigned long long probe[72][12];
+            if (!fn::hc::hc_tl_read(&probe[0][0])) {
+                fprintf(stderr, "hc2-bench tl: needs a build with -DFNFL_HC_TL in CMAKE_CUDA_FLAGS\n");
+                ok = false;
+            }
+            for (const int32_t rows : {1, 3, 4}) {
+                std::vector<std::vector<double>> d(12);
+                std::vector<std::vector<double>> dm(12);
+                for (int32_t rep = 0; rep < 40 && ok; ++rep) {
+                    card2 & k = *bn.c[0];
+                    ok = bn.restore_pre_sub(c0u) && cuda_ok(cudaSetDevice(k.dev), "dev") && k.cold() &&
+                         bn.fused(rows, 0, rep % n_sub, true) && cuda_ok(cudaStreamSynchronize(k.st), "sync");
+                    unsigned long long tl[72][12];
+                    ok = ok && fn::hc::hc_tl_read(&tl[0][0]);
+                    if (!ok || rep < 5) {
+                        continue;
+                    }
+                    // per point: the mean over blocks (up points over blocks 0..39) of (t_i - t_0), and the max
+                    for (int32_t i = 1; i <= 9; ++i) {
+                        const int32_t nb = i >= 5 ? 40 : 72;
+                        double sum = 0, mx = 0;
+                        for (int32_t b = 0; b < nb; ++b) {
+                            const double v = double(tl[b][i] - tl[b][0]) / 1380.0;
+                            sum += v;
+                            mx = v > mx ? v : mx;
+                        }
+                        d[i].push_back(sum / nb);
+                        if (i == 4 || i == 9) {
+                            dm[i].push_back(mx);
+                        }
+                    }
+                }
+                printf("tl B%d (mean over blocks of us since the block's start, median of 35 cold launches):", rows);
+                for (int32_t i = 1; i <= 9; ++i) {
+                    std::vector<double> v = d[i];
+                    std::sort(v.begin(), v.end());
+                    printf(" t%d %.2f", i, v.empty() ? -1.0 : v[v.size() / 2]);
+                }
+                for (const int32_t i : {4, 9}) {
+                    std::vector<double> v = dm[i];
+                    std::sort(v.begin(), v.end());
+                    printf(" max_t%d %.2f", i, v.empty() ? -1.0 : v[v.size() / 2]);
+                }
+                printf("\n");
+            }
+        } else if (m == "ncu-fused4") {
+            // card 0's pre-filled one-launch sublayer at B = 4 (decode's verify), each launch after the cold flush
+            ok = ok && time_point2(bn, "ncu_cold_pre_fused_B4", "sub alone after a cold flush, X-HC pre-filled (card 0)",
+                                   "F", 4, card0, 1, 1,
+                                   [&bn](int32_t r, int32_t n) { return bn.c[r]->cold() && bn.fused(4, r, n, true); },
+                                   true);
         } else if (m == "ncu-up" || m == "ncu-fused") {
             // HC4: card 0's pre-filled up2 arm 0 (B2's shape) or one-launch sublayer at B = 3: 64 launches a replay,
             // one warm replay and one profiled
@@ -1186,7 +1250,7 @@ int fnfl_hc2_bench(int dev0, int dev1, const char * mode) {
         } else if (m == "cold") {
             // HC4: arm 0's launches and the sublayer cold (R17), B = 1 and 3, both cards: down2 and up2 alone with the
             // peer's data pre-filled, and the sublayer (down2, up2, ready) on both cards
-            for (const int32_t rows : {1, 3}) {
+            for (const int32_t rows : {1, 3, 4}) {
                 const std::string pd = "cold_pre_down_B" + std::to_string(rows);
                 ok = ok && time_point2_cold(bn, pd.c_str(), "down2 alone, sends to a sink", "-", rows, both,
                                             [&bn, rows](int32_t r, int32_t n) { return bn.down(rows, r, n, true); });
