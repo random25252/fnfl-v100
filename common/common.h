@@ -453,6 +453,7 @@ struct common_params_fnfl {
     bool                 hc_packed      = false; // --fnfl-hc-packed on|off
     bool                 graph_copy_skip = false; // --fnfl-graph-copy-skip on|off
     bool                 prompt_graphs   = true;  // --fnfl-prompt-graphs on|off
+    bool                 hc_up_staged    = false; // --fnfl-hc-up-staged on|off
     bool                 check_state    = false; // TEST: compare the engine's tokens with the slot's after every call
     std::vector<int32_t> test_eog;               // TEST: more end-of-generation IDs
     int32_t              test_fail_step = 0;     // TEST: step K of the next request fails once (0: off)

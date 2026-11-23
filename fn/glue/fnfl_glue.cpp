@@ -4,6 +4,7 @@
 #include "fn/borrowed/gguf_meta.h"
 #include "fn/fnfl.h"
 #include "fn/loader/run_load.h"
+#include "fn/kernels/hc/hc_prompt.h"
 #include "fn/model/graph_rec.h"
 #include "fn/model/kv_pool.h"
 #include "fn/model/model.h"
@@ -475,10 +476,13 @@ fnfl_engine * fnfl_load(const fnfl_load_params & params, fnfl_model_meta & meta,
     fn::xchg::set_hc_packed(params.config.hc_packed);
     fn::model::graph_copy_skip(params.config.graph_copy_skip);
     fn::model::prompt_graphs(params.config.prompt_graphs);
-    fprintf(stderr, "FNFL: --fnfl-hmix-route %s; --fnfl-hc-packed %s; --fnfl-graph-copy-skip %s; --fnfl-prompt-graphs %s\n",
+    fn::hc::set_hc_up_staged(params.config.hc_up_staged);
+    fprintf(stderr,
+            "FNFL: --fnfl-hmix-route %s; --fnfl-hc-packed %s; --fnfl-graph-copy-skip %s; --fnfl-prompt-graphs %s; "
+            "--fnfl-hc-up-staged %s\n",
             params.config.hmix_route.empty() ? "peer (default)" : params.config.hmix_route.c_str(),
             params.config.hc_packed ? "on" : "off (default)", params.config.graph_copy_skip ? "on" : "off (default)",
-            params.config.prompt_graphs ? "on (default)" : "off");
+            params.config.prompt_graphs ? "on (default)" : "off", params.config.hc_up_staged ? "on" : "off (default)");
     fn::loader::run_load_report lr;
     auto m = std::make_unique<fn::model::model>();
     if (!fn::loader::load_for_run(lp, c.n_ctx_slot, *m, lr, err)) {

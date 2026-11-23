@@ -52,6 +52,9 @@ struct fnfl_config {
     // --fnfl-prompt-graphs on|off (on): prompt pieces of at most 512 rows as unit graphs or direct launches
     // (fn::model::prompt_graphs; also POST /props); bitwise the same
     bool prompt_graphs = true;
+    // --fnfl-hc-up-staged on|off (off): the prompt HC up product with its epilogue staged and coalesced
+    // (fn/kernels/hc/hc_prompt.h set_hc_up_staged); bitwise the same
+    bool hc_up_staged = false;
     bool check_state = false;      // TEST (--fnfl-check-state): the shell compares fnfl_slot_tokens after every call
     std::vector<int32_t> test_eog; // TEST (--fnfl-test-eog ID): more end-of-generation IDs
     int32_t test_fail_step = 0;    // TEST (--fnfl-test-fail-step K): step K of the next request fails once; 0 off

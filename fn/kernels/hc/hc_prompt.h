@@ -167,6 +167,14 @@ bool hct_mix_ladder(const hcp_args &      a,
                     void *                stream);
 // the ladder instances' shared memory opt-in on the current device (once a card, before any stream capture)
 bool hcl_attributes();
+
+// --fnfl-hc-up-staged on|off (FNFL_HC_UP_STAGED=1; docs/fnfl/prefill-headroom.md): hct_mix's up product past
+// hct_small_rows rows on a smaller CTA with its epilogue staged in shared memory and coalesced (hc_prompt.cu
+// hct_upe_kernel), instead of the original 128 x 128 tile with the epilogue's scattered per-lane loads. The same
+// products in the same K order and the same epilogue arithmetic: bitwise the same outputs. Set before the first prompt
+// (process-wide); default off
+void set_hc_up_staged(bool on);
+bool hc_up_staged();
 // product (0 down, 1 up) on tile t, the Q8_0 (q8) or BF16 halves' instance
 bool hcl_resources(bool q8, int32_t product, int32_t t, fn::tc::lad_resources & r);
 

@@ -4455,6 +4455,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--fnfl-hc-up-staged"}, "on|off",
+        "FNFL: run the prompt path's HC up product on a smaller tile with its epilogue staged in shared memory, so the "
+        "streams and outputs are read and written in contiguous runs; each HC sublayer of a 4,096-row half runs ~18% "
+        "faster on V100 (docs/fnfl/prefill-headroom.md). Outputs are bitwise the same (default: off)",
+        [](common_params & params, const std::string & value) {
+            if (value != "on" && value != "off") {
+                throw std::invalid_argument("--fnfl-hc-up-staged is on or off");
+            }
+            params.fnfl.hc_up_staged = value == "on";
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--fnfl-check-state"},
         "FNFL TEST (SV1): after every engine call, compare the engine's tokens with the slot's; fail the request on a mismatch",
         [](common_params & params) { params.fnfl.check_state = true; }

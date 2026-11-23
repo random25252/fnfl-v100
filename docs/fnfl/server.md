@@ -105,6 +105,10 @@ To stop the server, send it SIGTERM. Both cards should then return to 0 MiB.
   copy nodes alone if their parameters haven't changed, instead of setting them again. On the development machine,
   a copy node set again to the parameters it already holds runs about 14× slower (it falls off the copy engine), which
   is what made the graph route slow. Outputs are bitwise the same. Only matters with `--fnfl-prompt-graphs on`.
+- **`--fnfl-hc-up-staged on|off`** (default `off`): run the prompt path's HC up product on a smaller tile, with its
+  epilogue staged in shared memory so the streams and outputs move in contiguous runs. The same products and arithmetic
+  in the same order, so outputs are bitwise the same. On the development machine, prompts read 3–4% faster: an 8,192-token
+  prompt in 2.20 s instead of 2.27 s ([`prefill-headroom.md`](prefill-headroom.md)).
 - **`--fnfl-kv-format q8|bf16`** (default `q8` on the two-card engine): the KV cache's format. `q8` is int8 with an FP16 scale every 64 values and passed the engine's KL bounds; `bf16` is the 16-bit cache. The expert-cache configurations use `bf16` and refuse `q8`.
 - **`--fnfl-ple-table lazy|full`** (default `lazy`): what happens to the model's 26.9 GiB per-layer-embedding table.
   - `lazy` leaves it memory-mapped and hints the pages each step will read, so the first requests may fault some in from disk.

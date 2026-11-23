@@ -1327,6 +1327,98 @@ bool fused_route_cases(bool san, verdict & v, const hcw & w) {
     return all;
 }
 
+// hcp-test bench: hct_mix (the converted route the IQ3 files run) at prompt rows, the original up and the staged one
+// (set_hc_up_staged), timed with events (median of 20 after 3 warm-up launches); every output (mixed, the FP16 copy,
+// inject, mom, low) compared bitwise with the original's
+bool bench_cases(verdict & v, const hcw & w) {
+    bool all = true;
+    for (const int32_t rows : { 512, 2048, 4096 }) {
+        std::vector<float> x;
+        make_x(rows, 0x6b0 + uint64_t(rows), x);
+        std::vector<uint16_t> dn[2], up[2];
+        std::vector<float>    gm[2];
+        halves(w, dn, up, gm);
+        dbuf ddn0(dn[0].size() * 2), ddn1(dn[1].size() * 2), dup0(up[0].size() * 2), dup1(up[1].size() * 2),
+            dg0(gm[0].size() * 4), dg1(gm[1].size() * 4), dx(x.size() * 4), mom(size_t(rows) * fn::hc::hcp_mom * 4),
+            low(size_t(rows) * NL * 4), rinv(size_t(rows) * 16), inj(size_t(rows) * 16), mixed(size_t(rows) * D * 4),
+            m16(size_t(rows) * D * 2), err(256), w16(static_cast<size_t>(fn::hc::hct_weight_bytes())),
+            scr(static_cast<size_t>(fn::hc::hct_scratch_bytes(rows)));
+        if (!ddn0.put(dn[0]) || !ddn1.put(dn[1]) || !dup0.put(up[0]) || !dup1.put(up[1]) || !dg0.put(gm[0]) ||
+            !dg1.put(gm[1]) || !dx.put(x) || !err.zero() || !w16.poison() || !scr.poison()) {
+            return false;
+        }
+        fn::hc::hcp_args a;
+        a.w.form     = fn::hc::hcp_form::replicated;
+        a.w.down[0]  = ddn0.as<uint16_t>();
+        a.w.down[1]  = ddn1.as<uint16_t>();
+        a.w.up[0]    = dup0.as<uint16_t>();
+        a.w.up[1]    = dup1.as<uint16_t>();
+        a.w.gamma[0] = dg0.as<float>();
+        a.w.gamma[1] = dg1.as<float>();
+        a.rows       = rows;
+        a.x          = dx.as<float>();
+        a.mom        = mom.as<float>();
+        a.low        = low.as<float>();
+        a.rinv       = rinv.as<float>();
+        a.inject     = inj.as<float>();
+        a.mixed      = mixed.as<float>();
+        a.ld_mixed   = D;
+        a.mixed16    = m16.as<uint16_t>();
+        a.ld_mixed16 = D;
+        a.err        = err.as<uint32_t>();
+        const fn::hc::hct_weights hw = fn::hc::hct_carve(w16.as<uint8_t>());
+        cudaStream_t              st = static_cast<cudaStream_t>(fn::ptest::test_stream());
+        if (!fn::hc::hct_convert(a.w, hw, st) || !cuda_ok(cudaDeviceSynchronize(), "convert")) {
+            return false;
+        }
+        std::vector<float>    m0, i0, o0, l0;
+        std::vector<uint16_t> h0;
+        double                t0 = 0;
+        for (int32_t t = 0; t <= 1; ++t) {
+            fn::hc::set_hc_up_staged(t == 1);
+            if (!mixed.poison() || !m16.poison() || !inj.poison() || !mom.poison() || !low.poison()) {
+                return false;
+            }
+            cudaEvent_t e0, e1;
+            std::vector<float> ms;
+            bool ok = cuda_ok(cudaEventCreate(&e0), "event") && cuda_ok(cudaEventCreate(&e1), "event");
+            for (int32_t i = 0; ok && i < 23; ++i) {
+                ok = cuda_ok(cudaEventRecord(e0, st), "record") &&
+                     fn::hc::hct_mix(a, fn::hc::hct_combine{}, hw, scr.as<uint8_t>(), st) &&
+                     cuda_ok(cudaEventRecord(e1, st), "record") && cuda_ok(cudaEventSynchronize(e1), "sync");
+                float f = 0;
+                if (ok && i >= 3 && cuda_ok(cudaEventElapsedTime(&f, e0, e1), "elapsed")) {
+                    ms.push_back(f);
+                }
+            }
+            std::vector<float>    m, in, o, l;
+            std::vector<uint16_t> h;
+            ok = ok && mixed.get(m, size_t(rows) * D) && m16.get(h, size_t(rows) * D) && inj.get(in, size_t(rows) * 4) &&
+                 mom.get(o, size_t(rows) * fn::hc::hcp_mom) && low.get(l, size_t(rows) * NL);
+            (void) cudaEventDestroy(e0);
+            (void) cudaEventDestroy(e1);
+            if (!ok || ms.empty()) {
+                v.put("bench " + std::to_string(rows) + (t ? " rows staged" : " rows original"), false, "launch failed");
+                all = false;
+                continue;
+            }
+            std::sort(ms.begin(), ms.end());
+            const double med = ms[ms.size() / 2];
+            if (t == 0) {
+                m0 = m, h0 = h, i0 = in, o0 = o, l0 = l, t0 = med;
+            }
+            const bool same = m == m0 && h == h0 && in == i0 && o == o0 && l == l0;
+            char       buf[160];
+            std::snprintf(buf, sizeof buf, "hct_mix %.3f ms (original: %.3f ms, %+.3f ms); outputs %s the original's", med,
+                          t0, med - t0, same ? "bitwise" : "DIFFER from");
+            v.put("bench " + std::to_string(rows) + (t ? " rows staged" : " rows original"), same, buf);
+            all = all && same;
+        }
+        fn::hc::set_hc_up_staged(false);
+    }
+    return all;
+}
+
 int fnfl_hcp_test(int device, const char * mode) {
     const bool san = mode != nullptr && std::strcmp(mode, "san") == 0;
     verdict    v("hcp-test");
@@ -1344,6 +1436,10 @@ int fnfl_hcp_test(int device, const char * mode) {
     }
     hcw w;
     make_w(0x48437031, w);
+    if (mode != nullptr && std::strcmp(mode, "bench") == 0) {  // the original and the staged up, timed and compared
+        bench_cases(v, w);
+        return v.finish();
+    }
     for (const int32_t r : san ? std::vector<int32_t>{ 3 } : std::vector<int32_t>{ 1, 5, 64, 65, 200 }) {
         replicated_case(r, v, w);
     }

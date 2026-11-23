@@ -80,6 +80,68 @@ Both default to upstream's behaviour (graphs on, no skip).
 bitwise identical across four arms: the old production build (graphs, no skip), graphs with the skip, graphs off
 through `/props`, and the startup flag.
 
+## Done: the HC up product's epilogue (`--fnfl-hc-up-staged on`)
+
+**The problem** (Nsight Compute, full set, on `fnfl-drive hcp-test 0 bench`):
+- The original `hct_up` (a 128 × 128 CTA of four 64 × 64 warps, 242 registers, 8 warps an SM) stalled mostly on
+  global loads (long scoreboard, 6.6 a issue).
+- Its epilogue reads the F32 streams, `rinv`, gamma and the scales per lane, scattered: 19.9M L1 sectors for 3.4M
+  requests, ~7× the streams' bytes, at a 27% L1 hit rate.
+
+**The change** (`hct_upe_kernel` in `fn/kernels/hc/hc_prompt.cu`; switch `set_hc_up_staged`, server
+`--fnfl-hc-up-staged on`, `fnfl-drive`'s environment `FNFL_HC_UP_STAGED=1`):
+- The product runs on a 64 × 128 CTA of eight 32 × 32 warps.
+- Its raw accumulators are staged in shared memory as `[row][stream][feature]`, reusing the pipeline's buffers after
+  the k loop's last barrier. A per-row rotation of the features keeps the eight-row stores free of bank conflicts.
+- The original epilogue's arithmetic then runs with a warp a row and a lane a feature, so the streams, gamma and both
+  outputs move in contiguous 128-byte runs.
+- **Bitwise the same:** every output's K order is the tile's own k loop on any tile shape, and the epilogue performs
+  the same F32 operations in the same order.
+
+**Variants tried** (the same bench, the HC sublayer at 4,096 rows: 2.52 ms originally):
+
+| Variant | 4,096 rows | Note |
+|---|---|---|
+| 128 × 128, eight 64 × 32 warps | 2.16 ms | the best plain tile |
+| 64 × 128, eight 32 × 32 warps | 2.32 | |
+| two smaller variants | 2.69–2.77 | slower |
+| **64 × 128 + staged coalesced epilogue (kept)** | **2.06** | 4.75M shared-store bank conflicts before the rotation |
+| 128 × 128 + epilogue staged in two 64-row phases | 2.21 | the serialized phases cost more than the halved weight reads save |
+
+**Results:**
+- **`hcp-test`:** all 83 checks pass with the switch off and on, against the FP64 bounds, the range stress and the
+  bitwise reruns.
+- **`hcp-test bench`:** the HC sublayer at 512, 2,048 and 4,096 rows is 26%, 19–22% and 18% faster, with every
+  output bitwise the original's. `hct_up` alone goes from 1.57 to 1.17 ms at 4,096 rows.
+- **Server** (`ttft_bench.py`, medians of 3, the page cache warm):
+
+| Prompt | Original | Staged | Change |
+|---|---|---|---|
+| 512 tokens | 0.270 s | 0.255 s | −5.6% |
+| 2,048 | 0.704 s | 0.677 s | −3.8% |
+| 8,192 | 2.273 s | 2.204 s | −3.0% (3,605 → 3,718 tok/s) |
+| 32,768 | 8.626 s | 8.413 s | −2.5% (3,799 → 3,895 tok/s) |
+
+- **Correctness:** greedy 64-token continuations of 12 prompts (fresh 100–9,000 tokens, appends after 20K) were
+  bitwise identical with the switch off and on.
+- **Telemetry:** GPU 0 averaged 57–61 °C core (peaks 63–70) and 59–63 °C HBM (peaks 66–72). It hit the 250 W cap
+  (`0x4`) in short bursts, somewhat more often with the faster kernel. GPU 1 had no throttling. There was no thermal
+  throttling.
+
+**Why only ~3%:** `hct_up` was ~13% of a long chunk, so a 26% faster kernel is worth ~3.4% at most, and GPU 0 meets
+its power cap a little more often. That is less than the 7–9% estimated from the first profile, which counted
+`hct_down` and a larger cut in `hct_up`.
+
+**HC's share now, per 4,096-row half** (bench): `hct_split` 0.32 ms (memory-bound), `hct_down` 0.59 ms, `hct_mid`
+0.04 ms, `hct_up` 1.17 ms.
+- `hct_up`'s floor is ~0.3–0.45 ms: 27 GFLOP and ~230 MB.
+- It now waits on its operand loads more than its epilogue. Each 64-row tile re-reads the 6.5 MB of up weights, and
+  occupancy is 24 warps an SM.
+
+**Trap:** after a run with `--fnfl-ple-warm off`, or anything else that evicts the page cache, the PLE table's warm read
+takes ~135 s from disk. Requests during it are slowed by page faults (a 2,048-token prompt took 7.2 s). Wait for
+`PLE warm: ... resident 100%` in the log before benchmarking.
+
 ## Where a long chunk's time goes
 
 One 8,192-row chunk (fresh, depth 0–8K) takes 2.10 s. **Both cards are kernel-busy 94–96% of it.** GPU 0's kernel time:
@@ -107,6 +169,40 @@ What the timeline rules out:
   128 ms seen upstream.
 - **Depth:** a 131K prompt averages ~2.2 s a chunk against 2.1 s at the start, partly GPU 0's clock (below). QSA
   scoring of dead blocks (Strata-V100's finding) can be worth at most a few percent here.
+
+### The kernels under Nsight Compute (2026-11-23)
+
+One fresh 8,192-token prompt; GPU 0; the first launches of each kernel (layers 0–2, a 4,096-row half). Only metrics
+that one pass collects (see the method note below):
+
+| Kernel | Time | DRAM | Tensor pipe busy | Active warps | Registers | Reading |
+|---|---|---|---|---|---|---|
+| `hct_split` | 0.34 ms | **823 GB/s** | — | 54% | 56 | memory-bound near peak; only fusion (fewer bytes) helps |
+| `hct_down` | 0.63 ms | 204 GB/s | 47% | 18% | 159 | moderate; occupancy limited by registers |
+| **`hct_up`** | **1.49 ms** | 176 GB/s | **20%** | **12%** | **242** | **bound by neither: 8 warps an SM can't hide the epilogue's latency** |
+| `pt_kernel` (dense) | 1.3–3.6 ms | ~280 GB/s | 53–58% | 12% | 246 | fairly efficient already |
+| `ep_gate_up` | 3.35–3.39 ms | ~150 GB/s | 48% | 31% | 96 | like dense |
+| `ep_down` | 1.76–2.07 ms | ~260 GB/s | 39–46% | 23% | 122–126 | like dense |
+| `ep_sum` | 0.32 ms | 845 GB/s | — | 71% | 36 | memory-bound near peak |
+| `ep_group` | 0.15 ms | — | — | — | 63 | **a grid of one block**: ~14 ms a chunk for a trivial job |
+
+What it changes:
+- **`hct_up` is the outlier.** Its product could run at least at `hct_down`'s rate. 1.43 ms → ~0.6–0.7 ms a launch
+  saves ~140–160 ms a chunk, and `hct_down` maybe ~30 ms more: **~7–9% on long prompts**. That is less than the 10–12%
+  estimated before profiling, because `hct_split` is already at the memory roof.
+- **Dense and expert products have less headroom than their TFLOP/s suggested.** The tensor pipe is already 40–58%
+  busy; reaching ~70% would take serious tile work for ~15–25% of their time.
+
+**Method note (this box):**
+- Nsight Compute needs root here (`RmProfilingAdminOnly: 1`).
+- A multi-pass collection backs up the GPU memory a kernel may touch into host RAM. With the engine filling a card,
+  that was ~30 GB, plus the 27 GB locked PLE table, and the kernel's OOM killer stopped the server.
+- What works:
+  - `--fnfl-ple-warm off`;
+  - one-pass metrics only, with `--replay-mode application`, so a second pass could never back up memory;
+  - `--devices 0`;
+  - the server under `sh -c "timeout -s TERM 120 …; exit 0"`. A root server can't be stopped from the user account,
+    and Nsight Compute drops the report when the program exits non-zero.
 
 **Short prompts** are dominated by work done once a chunk whatever its size. At 28 tokens, ~85 ms of kernels:
 - `pd_convert` 12 ms and `hct_convert` 5.5 ms, the dense and HC weights converted to FP16 for every chunk;
@@ -149,12 +245,12 @@ limits long prompts; kernel efficiency is.**
 
 ## What is left, ranked by gain against effort
 
-Estimates, not measured. Long-prompt rate today ~3,700 tok/s; the target is 4,000, and 5,000+ would need the first
-three items.
+Estimates, not measured. Long-prompt rate today ~3,720–3,900 tok/s with `--fnfl-hc-up-staged on`; the target is 4,000,
+and 5,000+ would need the first three items.
 
 | # | Idea | Expected gain | Effort |
 |---|---|---|---|
-| 1 | **HC prompt kernels.** `hct_up` (~19 TFLOP/s; also re-reads the F32 streams in its epilogue) and the memory-bound `hct_split` (~610 GB/s) | ~−250 ms a chunk, **+10–12%** from 2K tokens up | days; bitwise-equal is likely possible if only data movement changes |
+| 1 | **HC prompt kernels, the rest.** `hct_up`'s staged epilogue is done (+3–4%, above). Left: `hct_up`'s operand traffic and occupancy (1.17 ms against a ~0.4 ms floor at 4,096 rows), `hct_down` (47% tensor-busy, register-limited), and fusing `hct_split` (memory-bound at ~820 GB/s) into its neighbours to cut bytes | maybe +3–5% more | days each, uncertain; bitwise where only data movement changes |
 | 2 | **Split HC across the cards** instead of replicating it, its moments exchanged by the copy engines | another ~+5–10% | 1–2 weeks; sums in another order, so the numerical contract, not bitwise |
 | 3 | **Expert and dense GEMMs** (~37 and ~44 TFLOP/s): better Volta tiles, experts grouped over the whole chunk rather than each half, faster decode in the loader | +10–20% | weeks, uncertain; run Nsight Compute on `ep_gate_up`, `pt_kernel` and `hct_up` first (half a day) |
 | 4 | **QSA card balance** (the indexer's card alternates; the other waits 3–8 ms a QSA layer) | +2–4% | days |

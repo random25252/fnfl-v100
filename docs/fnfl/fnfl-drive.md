@@ -54,7 +54,7 @@ Each family has a `-test` that checks the kernels against an FP64 CPU reference,
 - **The draft block's kernels:** `draft-kernel-test`, `draft-kernel-bench`.
 - **The sampler on both cards against the CPU reference:** `samp-test`, `samp-bench`.
 - **The card-to-card protocol:** `xchg-test`, `xchg2-test`.
-- **The prompt-path kernels:** `pd-test`, `hcp-test`, `gdp-test`, `qsp-test`, `pe-test` and `dcp-test`. These cover the dense products and router, HC and its exchange, GDN, QSA, the embedding and PLE, and the draft's catch-up pieces.
+- **The prompt-path kernels:** `pd-test`, `hcp-test`, `gdp-test`, `qsp-test`, `pe-test` and `dcp-test`. `hcp-test DEVICE bench` times the HC sublayer at 512, 2,048 and 4,096 rows with the original up product and the staged one (`--fnfl-hc-up-staged`), and checks every output bitwise. These cover the dense products and router, HC and its exchange, GDN, QSA, the embedding and PLE, and the draft's catch-up pieces.
 - **Prototypes:** `px1-link`, `xp1-test` and `xp1-bench`, kept from the design's prototyping.
 
 Most tests take `san` for a smaller case set suited to Compute Sanitizer. Most benches take `ncu` or `nsys` to run one point for a profiler.

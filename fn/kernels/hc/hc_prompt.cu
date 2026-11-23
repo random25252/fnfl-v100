@@ -8,8 +8,10 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 
 namespace fn::hc {
 namespace {
@@ -1003,6 +1005,102 @@ hct_up_kernel(const hcp_args a, const hct_weights w, const hct_scr sc) {
     }
 }
 
+// --fnfl-hc-up-staged on (hc_prompt.h set_hc_up_staged): the up's product on a 64 x 128 CTA of eight 32 x 32 warps
+// (the original: 128 x 128 of four 64 x 64 warps, 242 registers, 8 warps an SM), its raw accumulators staged
+// in shared memory ([row][stream][feature] F32, the pipeline's buffers reused after the k loop's last barrier), then
+// up_epi's arithmetic with a warp a row and a lane a feature: the streams x, gamma, mixed and the FP16 copy are read and
+// written as contiguous 128-byte runs instead of up_epi's scattered per-lane words (Nsight Compute: ~7x the streams'
+// bytes in L1 sectors). Each output's operations are up_epi's, in its order: bitwise the same (any tile: each output's K order is the tile's own k loop, the
+// same on every tile). Measured (hcp-test bench, 4,096 rows): the HC sublayer 2.52 -> 2.06 ms
+namespace upe {
+using sh                    = fn::tc::shape<128, 2, 2>;
+constexpr int32_t feats     = 128 / 4;                 // a CTA's 128 columns are 32 features' four streams
+constexpr int32_t stage     = sh::rows * 4 * feats * 4;  // bytes
+constexpr int32_t smem      = stage > sh::smem ? stage : sh::smem;
+// a row's features rotated by 4 g(row), g taking the eight rows one epilogue store covers ({0, 1, 4, 5} + 8 {0, 1}, at
+// any even offset) to distinct 0 .. 7, so the store's 8 rows x 4 features hit 32 distinct banks; a row's 32 features
+// stay a whole rotation of the banks, so the row reads stay conflict-free
+__device__ __forceinline__ int32_t rot(int32_t row) {
+    return 4 * ((row & 1) | ((row >> 1) & 2) | ((row >> 1) & 4));
+}
+}  // namespace upe
+
+template <int32_t MODE>
+__global__ void __launch_bounds__(upe::sh::threads, 3)
+hct_upe_kernel(const hcp_args a, const hct_weights w, const hct_scr sc) {
+    extern __shared__ uint4 upe_sm[];
+    float * const   stg = reinterpret_cast<float *>(upe_sm);
+    fn::tc::problem p;
+    p.a.a0              = sc.l16;
+    p.a.ld0             = n_down;
+    p.a.k_split         = n_down;
+    p.b                 = w.up;
+    p.ldb               = n_down;
+    p.rows              = a.rows;
+    p.n                 = NB;
+    p.k                 = n_down;
+    const int32_t row0  = static_cast<int32_t>(blockIdx.x) * upe::sh::rows;
+    const int32_t col0  = static_cast<int32_t>(blockIdx.y) * 128;
+    const int32_t fbase = col0 / 4;  // up_feature(col0): the CTA's 32 features are fbase .. fbase + 31
+    // the k loop ends on a barrier, so the epilogue may overwrite the pipeline's buffers
+    const auto stage_epi = [&](int32_t row, int32_t c0, const float (&v)[4]) {
+        const int32_t lr = row - row0;
+        float *       d  = stg + lr * 4 * upe::feats + ((up_feature(c0) - fbase + upe::rot(lr)) & (upe::feats - 1));
+#pragma unroll
+        for (int32_t s = 0; s < 4; ++s) {
+            d[s * upe::feats] = v[s];
+        }
+    };
+    if constexpr (MODE == 0) {
+        fn::tc::gemm_cta<128, 2, 2>(p, row0, col0, reinterpret_cast<uint8_t *>(upe_sm), stage_epi);
+    } else {
+        up_loader<MODE == 2> bl;
+        bl.w  = a.w;
+        bl.us = w.up_s;
+        fn::tc::gemm_cta_b<128, 2, 2>(p, row0, col0, reinterpret_cast<uint8_t *>(upe_sm), stage_epi, bl);
+    }
+    __syncthreads();
+    const int32_t lane = static_cast<int32_t>(threadIdx.x) & 31, warp = static_cast<int32_t>(threadIdx.x) >> 5;
+    const int32_t f    = fbase + lane;
+    // up_epi's columns of feature f: stream s at 8 (f / 2) + 2 (f & 1) + (s & 1) + 4 (s >> 1)
+    const int32_t cb   = 8 * (f / 2) + 2 * (f & 1);
+    const int32_t col[4] = { cb, cb + 1, cb + 4, cb + 5 };
+    float up_s[4], gm[4];
+#pragma unroll
+    for (int32_t s = 0; s < 4; ++s) {
+        up_s[s] = __ldg(w.up_s + col[s]);
+        gm[s]   = gamma_of<hcp_form::replicated>(a.w, s, f);
+    }
+    constexpr int32_t warps = upe::sh::threads / 32;
+#pragma unroll 1
+    for (int32_t lr = warp; lr < upe::sh::rows; lr += warps) {
+        const int32_t row = row0 + lr;
+        if (row >= a.rows) {
+            break;
+        }
+        const float * v     = stg + lr * 4 * upe::feats + ((lane + upe::rot(lr)) & (upe::feats - 1));
+        const float   ls    = sc.l_s[row];
+        float         mixed = 0.0f;
+#pragma unroll
+        for (int32_t s = 0; s < 4; ++s) {
+            const float g  = v[s * upe::feats] * ls * up_s[s];
+            const float ri = a.rinv[int64_t(row) * 4 + s];
+            const float gx = gm[s] * a.x[(int64_t(row) * 4 + s) * D + f];
+            mixed          = fmaf(gx * ri, sigm(g), mixed);
+        }
+        mixed = 0.25f * mixed;
+        if (a.mixed != nullptr) {
+            a.mixed[int64_t(row) * a.ld_mixed + f] = mixed;
+        }
+        if (a.mixed16 != nullptr) {
+            if (!(fabsf(mixed) <= 65504.0f) && a.err != nullptr) {
+                atomicOr(a.err, 1u);
+            }
+            a.mixed16[int64_t(row) * a.ld_mixed16 + f] = __half_as_ushort(__float2half_rn(mixed));
+        }
+    }
+}
+
 // APF2: the ladder's tiles for the fused route's two products (fn/kernels/tc/tc_ladder.cuh), MODE 1 (BF16 halves)
 // or 2 (Q8_0 halves), the same loaders, operands and epilogues as hct_down_kernel / hct_up_kernel. The down's four
 // streams are one launch: grid y = stream x the column tiles over its 320 low rows (the last tile's columns past 320
@@ -1196,6 +1294,14 @@ void launch_down(const hcp_args & a, const hct_weights & w, const hct_scr & sc, 
 
 template <int32_t MODE, int32_t MI>
 void launch_up(const hcp_args & a, const hct_weights & w, const hct_scr & sc, cudaStream_t s) {
+    if constexpr (MI == 4) {
+        if (hc_up_staged()) {
+            const uint32_t rows = static_cast<uint32_t>(a.rows);
+            hct_upe_kernel<MODE><<<dim3((rows + upe::sh::rows - 1) / upe::sh::rows, NB / 128), upe::sh::threads,
+                                    upe::smem, s>>>(a, w, sc);
+            return;
+        }
+    }
     using up            = fn::tc::shape<128, MI, 4>;
     const uint32_t rows = static_cast<uint32_t>(a.rows);
     hct_up_kernel<MODE, MI><<<dim3((rows + up::rows - 1) / up::rows, NB / 128), up::threads, up::smem, s>>>(a, w, sc);
@@ -1371,6 +1477,27 @@ template <int32_t MODE> bool hcl_attr_mode() {
 }
 
 }  // namespace
+
+namespace {
+std::atomic<int32_t> g_up_staged{ -1 };  // -1: unset (FNFL_HC_UP_STAGED decides on first use)
+}  // namespace
+
+void set_hc_up_staged(bool on) {
+    g_up_staged.store(on ? 1 : 0);
+}
+
+bool hc_up_staged() {
+    int32_t cur = g_up_staged.load(std::memory_order_relaxed);
+    if (cur < 0) {
+        const char *  e    = std::getenv("FNFL_HC_UP_STAGED");
+        const int32_t want = e != nullptr && e[0] == '1' ? 1 : 0;
+        if (g_up_staged.compare_exchange_strong(cur, want) && want == 1) {
+            std::fprintf(stderr, "fn::hc: HC up staged epilogue on (FNFL_HC_UP_STAGED=1)\n");
+        }
+        cur = g_up_staged.load();
+    }
+    return cur == 1;
+}
 
 bool hcl_attributes() {
     return hcl_attr_mode<1>() && hcl_attr_mode<2>();
