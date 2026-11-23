@@ -1,6 +1,37 @@
-# ⚠️ This is a fork. Please use and contribute to the upstream project: [bitexploder/fnfl-v100](https://github.com/bitexploder/fnfl-v100)
+# This is a fork of [bitexploder/fnfl-v100](https://github.com/bitexploder/fnfl-v100)
 
-This fork only exists to carry a pull request (branch `pr/swift-iq3s`). Issues, pull requests and stars belong upstream.
+All credit for FNFL belongs to its author, with thanks for a remarkable engine. This fork adds a few things that
+haven't been merged upstream; the upstream project is the place for everything else. The fork's changes were made by
+Claude (Anthropic's coding agent), directed and run on the fork owner's machine.
+
+**The additions are on the [`iq3s-swift`](https://github.com/random25252/fnfl-v100/tree/iq3s-swift) branch:**
+
+- **Swift IQ3_S support.** The engine loads and serves
+  [Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S](https://github.com/random25252/fnfl-v100/blob/iq3s-swift/docs/iq3s-swift.md),
+  which upstream doesn't: its IQ4_XS token embedding, IQ4_XS routed gate/up in layer 47, Q6_K output and draft
+  heads, and F32 routers. On the prompts tested it matches a llama.cpp reference (identical top-5 next tokens, with
+  per-layer values tracking). Swift's draft acceptance matches the base model's.
+- **Faster decode on platforms whose GPU-to-GPU writes collapse.** On an Intel X299 board with the cards on different
+  CPU root ports (`nvidia-smi topo -m` shows `NODE`), writes from one GPU into the other's memory drop to about 1 GB/s
+  under load, so multi-token verify steps pay heavily. Other Intel platforms that put the cards on different root
+  ports (X99, dual-root-port Xeon boards) plausibly behave the same, but only X299 was measured.
+  - The fork adds two opt-in server flags, `--fnfl-hmix-route host` and `--fnfl-hc-packed on`. Outputs are bitwise
+    identical with them on or off.
+  - On one X299 machine with two V100s, Swift decode went from 162 to 183 tok/s (+13%) with `--fnfl-spec-d 3`.
+  - [The write-up](https://github.com/random25252/fnfl-v100/blob/iq3s-swift/docs/fnfl/decode-headroom.md) has the
+    measurements, a microbenchmark to check your own platform, and the ideas left to try.
+- **Diagnostics:** per-message wait counters for the card-to-card exchanges (a compile-time option) and verification
+  tools for new quants.
+
+**Who might want it:**
+- anyone running the Swift IQ3_S quant;
+- anyone with two V100s on an Intel board with the cards on different root ports, whose decode is slower than
+  upstream's figures (the write-up's microbenchmark checks this in a minute).
+
+On a platform where GPU-to-GPU writes work properly, the upstream project is what you want. The flags default off, so
+the fork behaves like upstream unless you pass them.
+
+Tested on one machine only. The original README follows.
 
 ---
 
