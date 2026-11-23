@@ -537,6 +537,7 @@ private:
         lp.config.hmix_route      = params_base.fnfl.hmix_route;
         lp.config.hc_packed       = params_base.fnfl.hc_packed;
         lp.config.hc_route        = params_base.fnfl.hc_route;
+        lp.config.lookup          = params_base.fnfl.lookup;
         lp.config.graph_copy_skip = params_base.fnfl.graph_copy_skip;
         lp.config.prompt_graphs   = params_base.fnfl.prompt_graphs;
         lp.config.hc_up_staged    = params_base.fnfl.hc_up_staged;

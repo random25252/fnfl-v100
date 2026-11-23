@@ -4430,6 +4430,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--fnfl-lookup"}, "N",
+        "FNFL: lookup (n-gram) drafts. When the last N tokens occurred earlier in the context, a speculative step "
+        "proposes the 4 tokens that followed there instead of running the draft head (agents rewriting or quoting "
+        "text already in the context); otherwise the draft head proposes as before. 0 turns it off. 6 is the measured "
+        "best on this box (docs/fnfl/decode-headroom.md). Greedy outputs are bitwise the same; sampled outputs keep "
+        "the target's distribution (default: 0)",
+        [](common_params & params, int value) {
+            if (value < 0 || value > 64) {
+                throw std::invalid_argument("--fnfl-lookup is 0 .. 64");
+            }
+            params.fnfl.lookup = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--fnfl-hc-route"}, "peer|pull|host",
         "FNFL, with --fnfl-hc-packed on: how the HC moments (X-HC) reach the other card in decode. peer writes them "
         "into the other card's memory; pull lets the receiving card read them from the sender's memory; host writes "

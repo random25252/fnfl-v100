@@ -50,6 +50,9 @@ struct fnfl_config {
     // pulled by the receiver from the sender's memory, or sent through pinned host memory; both pull and host are
     // landed inside the HC launch (fn/kernels/hc/hc.h sub). Bitwise the same.
     std::string hc_route;
+    // --fnfl-lookup N (0 off; -1 unset: FNFL_LOOKUP decides): lookup (n-gram) drafts when the last N tokens occurred
+    // earlier in the context (fn/runtime/runtime.h set_lookup). Greedy outputs are bitwise the same.
+    int32_t lookup = -1;
     // --fnfl-graph-copy-skip on|off (off): a prompt unit graph's copy nodes are not re-set on replay when their
     // parameters are unchanged (fn/model/graph_rec.h); bitwise the same
     bool graph_copy_skip = false;

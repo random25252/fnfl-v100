@@ -487,6 +487,11 @@ fnfl_engine * fnfl_load(const fnfl_load_params & params, fnfl_model_meta & meta,
     }
     fn::xchg::set_hc_host(hc_route == "host");
     fn::hc::set_hc_pull(hc_route == "pull");
+    if (params.config.lookup >= 0) {
+        fn::runtime::set_lookup(params.config.lookup);
+    }
+    fprintf(stderr, "FNFL: --fnfl-lookup %d (lookup drafts: %s)\n", fn::runtime::lookup_min_match(),
+            fn::runtime::lookup_min_match() > 0 ? "on" : "off");
     fn::model::graph_copy_skip(params.config.graph_copy_skip);
     fn::model::prompt_graphs(params.config.prompt_graphs);
     fn::hc::set_hc_up_staged(params.config.hc_up_staged);

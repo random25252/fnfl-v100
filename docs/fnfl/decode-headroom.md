@@ -98,7 +98,7 @@ the sections below.
 
 | # | Idea | Expected gain | Effort | Where it comes from |
 |---|---|---|---|---|
-| 1 | **Lookup (n-gram) drafts** within the 4-proposal limit, used when the context has a match | +30–60% on edit-heavy turns (agents rewriting files), ~0 on new prose; maybe +10–25% over an agentic session | medium (draft source, acceptance, tests) | sFNX, QEngine ([other engines](#other-engines-surveyed-2026-11-23)) |
+| 1 | **Lookup (n-gram) drafts** within the 4-proposal limit, used when the context has a match | **Done 2026-11-24** (`--fnfl-lookup 6`): +13–14% on edit-heavy turns, flat on general text; [measured below](#lookup-drafts-measured-2026-11-24). Less than the +30–60% estimated: the MTP head already copies well (~3.9 of its 4 tokens a step on edits) | medium (draft source, acceptance, tests) | sFNX, QEngine ([other engines](#other-engines-surveyed-2026-11-23)) |
 | 2 | **Adaptive draft count** from the draft head's confidence or recent acceptance (2–4 a step) | +3–8% | small–medium | QEngine (3–5 drafts from confidence), sFNX (acceptance-sized) |
 | 3 | **Host path for every decode exchange** (X-HC, X-A, X-F as well as X-HMIX), chosen at startup by timing real decode steps on each path, cached | +3–5% here (exchanges are ~8–9% of a step); also makes the right choice on other platforms automatically. **X-HC done 2026-11-24** (`--fnfl-hc-route host`, +4.4%); X-A and X-F left, and the automatic choice | medium | QEngine; this doc's measurements |
 | 4 | **The DFlash2 drafter** ([incoai/Qwen3.8-Flash-Next-DFlash2](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2)): 8-token blocks instead of the MTP chain | ReVolta reports +30% on English code (4× V100 NVLink); with FNFL's 5-row verify limit maybe +10–20% on code, less on Chinese or prose | large (a new drafter architecture in the engine) | ReVolta |
@@ -186,7 +186,7 @@ targets. **HC first:** it is the largest gap and the best understood.
 | Phase | What | Lever | Expected after it | Effort |
 |---|---|---|---|---|
 | 0. Measure | Nsight Systems on a decode step with node-level graph tracing, plus the wait counters: each kernel's time and bandwidth efficiency, idle gaps, draft against verify. Today there is only "~90% is the work" | — | a map of the ~11 ms above the floor | 1–2 days |
-| 1. Cheap acceptance | Lookup drafts within the 4-proposal limit; adaptive draft depth (shortlist items 1–2) | tokens a step | ~190–200 general; ~230–260 on edits | 1–2 weeks |
+| 1. Cheap acceptance | Lookup drafts within the 4-proposal limit (**done**: edits ~4.8 tokens a step, +13–14%); adaptive draft depth (shortlist items 1–2) | tokens a step | ~190–200 general; ~230–260 on edits | 1–2 weeks |
 | 2. Exchanges | The host route and packing for every exchange, chosen at startup by timing real steps; fewer, larger X-HC writes (shortlist item 3, ideas 1–2) | step −0.8–1 ms | ~200–215 general | 1–2 weeks |
 | 3. Kernels to bandwidth | The 1–5-row expert and dense kernels toward ~70–80% of HBM bandwidth; each layer's small kernels fused; the draft step fused | step ~15 → ~10 ms | ~270–300 general; ~350+ on edits | 4–8 weeks; the core of it |
 | 4. Fewer sync points | Merge or overlap the per-sublayer hand-offs; persistent per-layer kernels that keep both cards in lockstep without launch gaps | step ~10 → ~8 ms | ~300–350 general | 4–8 weeks, risky |
@@ -257,6 +257,37 @@ consecutive pairs.
   earlier; spread the up products over all 72 SMs (the run-aligned quantize then needs a cross-block finish, as HC3's
   72-block shape had); fold the landing into fewer, larger reads. Maybe another 5–8 µs a call, ~0.5–0.8 ms a step
   (+4–5%).
+
+## Lookup drafts, measured (2026-11-24)
+
+**What it is** (`--fnfl-lookup N`, env `FNFL_LOOKUP=N`; `FNFL_LOOKUP_MIN`, default 4). Before a speculative step, the
+host searches the slot's context (prompt and output so far) for the most recent earlier occurrence of its last N tokens.
+If at least 4 tokens followed it, the step proposes those 4 and skips the draft step (~1.15 ms); otherwise the draft
+head proposes as before. Code: `lookup_propose` and `step_propose` in `fn/runtime/runtime.cpp`.
+- **Correctness.** Greedy verify accepts a token only if it is the target's own choice, so greedy outputs are bitwise
+  the same with lookup on (checked on every edit-bench request). At T > 0 the accept step compares the target's p(x)
+  with the draft's retained q(x); for a lookup proposal the host writes the one-entry list {x: 1} into the row's
+  `q_list` on both cards, so a proposal is taken with probability p(x), and a rejection resamples from p without x:
+  the target's distribution, with no sampler change. The full sampling paths (top-k off) keep the draft head, and the
+  joint multi-user rounds don't use lookup (their lanes share one draft depth).
+- **The bench:** `docs/iq3s-tools/edit_bench.py`. Four agent-style edits (a repo file in the prompt, one small change,
+  the whole file back) and one prose control, chat, thinking off, up to 1,600 tokens.
+
+| | Lookup off | `--fnfl-lookup 6` |
+|---|---|---|
+| Edits, greedy, mean tok/s | 262.3 | **296.9 (+13%)** |
+| Edits, T 0.7 | 263.6 | **299.6 (+14%)** |
+| Edits, tokens a speculative step | ~3.8–3.96 | ~4.3–4.8 (max 5) |
+| Prose control, greedy | 222.4 | 221.7 |
+| `bench.py` (general, 24 requests), mean tok/s | 194.2 | 193.7 (lookup on ~3% of the steps) |
+
+- **The trigger matters.** A 3-token match with at least 2 proposals fired on prose and cost 10% there, for +3% on
+  edits. Matches of 4, 6 and 8 with 4 proposals gave edits +7%, +13% and +12%; 6 is the default to use.
+- **Why less than the estimate:** the MTP head already gets ~3.9 of its 4 tokens a step (3 proposals) on copied
+  text, so lookup only lifts that toward the verify window's 5. The rest of the gain on edits needs wider verify
+  windows (phase 5, `max_rows` = 5).
+- **Telemetry** (all lookup runs): GPU 0 up to 67 °C core and 68 °C HBM, `0x4` only during long prefills; GPU 1 up to
+  59 °C; no thermal throttling.
 
 ## Ideas for later, ranked by expected payoff
 

@@ -70,6 +70,7 @@ struct step_info {
     // catch-up; bootstrap and generate: their one round
     double to_draft_s = -1, to_verify_s = -1, to_catchup_s = -1, to_one_s = -1;
     bool joint = false; // FMU2: the verify round was a joint round's lane (step_joint)
+    bool lookup = false; // --fnfl-lookup: the proposals came from the context (no draft step), not the draft head
     // TTTS1 (engine_config::record_hash): the step's decision hash (the sampler record's, fn/kernels/samp/samp.h)
     uint64_t hash  = 0;
 };
@@ -92,8 +93,23 @@ bool step(target & t, int32_t budget, int32_t d, const std::vector<int32_t> & eo
 // step_propose, the draft step's min(d, budget - 1) proposals into s (from s.n_before, set by the caller, and the
 // step's start t0); step_close, from the verify round's result rv the step's tokens, the end-of-generation cut and the
 // draft's catch-up
+// --fnfl-lookup M (env FNFL_LOOKUP=M; 0 off): lookup (n-gram) drafts. When the ledger's last M tokens (the pending
+// token's) occurred earlier in the slot's context, a speculative step proposes the tokens that followed that earlier
+// occurrence (the most recent one), up to 4 (max_spec_d) and the budget, instead of running the draft step. Used when
+// at least lookup_min_props() (FNFL_LOOKUP_MIN, default 4) tokens follow; otherwise the draft head proposes as before.
+// At T > 0 each proposal's retained q (fn/kernels/samp/samp.h q_list) is written as the one-entry list {x: 1}, so the
+// accept step takes x with probability p(x) and a rejection resamples from p without x: the target's distribution,
+// as with the draft head's proposals. At T = 0 the tokens are bitwise those of the draft head's (greedy verify).
+// The full sampling paths (top-k off), whose q lives in q_shard, keep the draft head.
+void set_lookup(int32_t min_match, int32_t min_props = 4);
+int32_t lookup_min_match();
+int32_t lookup_min_props();
+// the lookup proposals for the context tok (ending with the pending token): the tokens after the most recent earlier
+// occurrence of its last m tokens, at most max_n of them, into prop; returns their count (0: no match)
+int32_t lookup_propose(const std::vector<int32_t> & tok, int32_t m, int32_t max_n, int32_t * prop);
+// lookup: --fnfl-lookup may replace the draft step (off in the joint rounds, whose lanes share one draft depth)
 bool step_propose(target & t, int32_t budget, int32_t d, std::chrono::steady_clock::time_point t0, step_info & s,
-                  std::string & err, const after_draft_fn * after_draft = nullptr);
+                  std::string & err, const after_draft_fn * after_draft = nullptr, bool lookup = true);
 bool step_close(target & t, const std::vector<int32_t> & eog, const round_result & rv,
                 std::chrono::steady_clock::time_point t0, step_info & s, std::string & err);
 // step_close's halves (FMS2 build item 2: a joint catch-up's members take theirs in between): step_cut, the step's

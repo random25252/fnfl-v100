@@ -42,7 +42,7 @@ cd ~/fnfl && ./build-fnfl/bin/llama-server --host 127.0.0.1 --port 8190 -np 1 --
   -md ~/fnfl-models/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
   --fnfl-draft-subset ~/fnfl/models/draft-vocab-qwen3.8-flash-next.txt \
   --fnfl-draft-attention sparse --fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on --fnfl-hc-route host \
-  --fnfl-prompt-graphs off --fnfl-hc-up-staged on --fnfl-dense-grouped on
+  --fnfl-prompt-graphs off --fnfl-hc-up-staged on --fnfl-dense-grouped on --fnfl-lookup 6
 ```
 
 The `--fnfl-spec-d 3 --fnfl-hmix-route host --fnfl-hc-packed on --fnfl-hc-route host` flags are this machine's
@@ -98,7 +98,8 @@ decoded at ~100 tok/s with normal acceptance, most likely the first load still p
   3–4 ms at 1,020 GB/s, but it takes ~14 ms. The rest is ~100 PCIe card-to-card hand-offs and small-kernel latency
   per pass: the author's core design. **Update 2026-11-23:** on this box the hand-offs were much worse than that,
   because peer writes collapse. Two experimental fixes take 3 proposals to 183 tok/s, against 162 at the old best
-  (+13%). **2026-11-24:** a third, `--fnfl-hc-route host`, takes it to 194 (+4.4%). The cause, the fixes, where a
+  (+13%). **2026-11-24:** a third, `--fnfl-hc-route host`, takes it to 194 (+4.4%), and `--fnfl-lookup 6` (lookup
+  drafts) adds +13–14% on agent-style edits. The cause, the fixes, where a
   step's time goes now and the ranked ideas for more are in
   [`docs/fnfl/decode-headroom.md`](fnfl/decode-headroom.md).
 - **Easy, not yet tested:** `-np 2..4`, if several requests run at once (upstream: 335 t/s total for four users).

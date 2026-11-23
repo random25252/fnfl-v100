@@ -94,6 +94,13 @@ To stop the server, send it SIGTERM. Both cards should then return to 0 MiB.
     `--fnfl-hc-route host` (below) 194.
   - With both switches, 3 proposals beat 2 and 4 there. Without them, deeper steps paid for the link.
   - On a machine whose peer writes don't collapse, measure before switching: the host route adds a hop.
+- **`--fnfl-lookup N`** (default `0`, off): lookup (n-gram) drafts. When the last N tokens occurred earlier in the
+  context, a speculative step proposes the 4 tokens that followed there instead of running the draft head; otherwise
+  the draft head proposes as before. Greedy outputs are bitwise the same, and sampled outputs keep the target's
+  distribution. **Use `6` on the development machine:** agent-style edits that copy a file +13–14%
+  (`docs/iq3s-tools/edit_bench.py`), general text flat (`bench.py`), 2026-11-24. The joint multi-user rounds and the
+  full sampling paths (top-k off) don't use it. The request's log line gains `lookup steps K (proposals a step, accepted,
+  tokens)`. fnfl-drive reads `FNFL_LOOKUP=N` (and `FNFL_LOOKUP_MIN`, default 4).
 - **`--fnfl-hc-route peer|pull|host`** (default `peer`; needs `--fnfl-hc-packed on` for `pull` and `host`): how the HC
   moments (X-HC) reach the other card in decode.
   - `peer` writes them into the other card's memory, as before.

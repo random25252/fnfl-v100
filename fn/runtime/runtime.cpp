@@ -7,8 +7,11 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -146,10 +149,104 @@ bool step(target & t, int32_t budget, int32_t d_max, const std::vector<int32_t> 
     return true;
 }
 
+namespace {
+std::atomic<int32_t> g_lookup{-1}; // -1: unset (FNFL_LOOKUP decides on first use)
+std::atomic<int32_t> g_lookup_props{4};
+
+// the one-entry retained q {x: 1} of verify row j on both cards (fn/kernels/samp/samp.h qlist), on each card's stream
+// ahead of the verify round; pageable sources, so each copy has consumed its source when it returns
+bool write_point_q(target & t, int32_t j, int32_t x, std::string & err) {
+    const int32_t head[4] = {1, 0, 0, 0};
+    const float one = 1.0f;
+    for (int32_t c = 0; c < 2; ++c) {
+        model::pass_card & pc = t.card(c);
+        fn::samp::qlist * q = pc.samp.q_list + j;
+        cudaStream_t st = static_cast<cudaStream_t>(pc.c.stream);
+        if (cudaSetDevice(pc.c.device) != cudaSuccess ||
+            cudaMemcpyAsync(q, head, sizeof(head), cudaMemcpyHostToDevice, st) != cudaSuccess ||
+            cudaMemcpyAsync(&q->id[0], &x, sizeof(x), cudaMemcpyHostToDevice, st) != cudaSuccess ||
+            cudaMemcpyAsync(&q->q[0], &one, sizeof(one), cudaMemcpyHostToDevice, st) != cudaSuccess) {
+            return fail(err, "lookup: the retained q not written");
+        }
+    }
+    return true;
+}
+} // namespace
+
+void set_lookup(int32_t min_match, int32_t min_props) {
+    g_lookup.store(std::max(0, min_match));
+    g_lookup_props.store(std::max(1, min_props));
+}
+
+int32_t lookup_min_match() {
+    int32_t cur = g_lookup.load(std::memory_order_relaxed);
+    if (cur < 0) {
+        const char * e = std::getenv("FNFL_LOOKUP");
+        const char * p = std::getenv("FNFL_LOOKUP_MIN");
+        const int32_t want = e != nullptr ? std::max(0, std::atoi(e)) : 0;
+        if (p != nullptr) {
+            g_lookup_props.store(std::max(1, std::atoi(p)));
+        }
+        if (g_lookup.compare_exchange_strong(cur, want) && want > 0) {
+            std::fprintf(stderr, "fn::runtime: lookup drafts on: match %d tokens, at least %d proposals (FNFL_LOOKUP)\n",
+                         want, g_lookup_props.load());
+        }
+        return want;
+    }
+    return cur;
+}
+
+int32_t lookup_min_props() {
+    return g_lookup_props.load(std::memory_order_relaxed);
+}
+
+int32_t lookup_propose(const std::vector<int32_t> & tok, int32_t m, int32_t max_n, int32_t * prop) {
+    const int64_t L = static_cast<int64_t>(tok.size());
+    if (m < 1 || max_n < 1 || L < m + 1) {
+        return 0;
+    }
+    const int32_t * key = tok.data() + (L - m);
+    // the most recent earlier occurrence: start positions i < L - m, scanned backwards
+    for (int64_t i = L - m - 1; i >= 0; --i) {
+        if (tok[static_cast<size_t>(i)] != key[0] || std::memcmp(tok.data() + i, key, sizeof(int32_t) * m) != 0) {
+            continue;
+        }
+        const int64_t from = i + m; // the tokens that followed it (from < L)
+        const int32_t n = static_cast<int32_t>(std::min<int64_t>(max_n, L - from));
+        for (int32_t k = 0; k < n; ++k) {
+            prop[k] = tok[static_cast<size_t>(from + k)];
+        }
+        return n;
+    }
+    return 0;
+}
+
 bool step_propose(target & t, int32_t budget, int32_t d_max, std::chrono::steady_clock::time_point t0, step_info & s,
-                  std::string & err, const after_draft_fn * after_draft) {
+                  std::string & err, const after_draft_fn * after_draft, bool lookup) {
     round_result r;
     const int32_t d = std::min(d_max, budget - 1);
+    const int32_t m = lookup ? lookup_min_match() : 0;
+    const fn::samp::options & so = t.sampling();
+    const bool greedy = !(so.temp > 0.0f);
+    if (m > 0 && after_draft == nullptr && (greedy || (so.top_k >= 1 && so.top_k <= fn::samp::max_k))) {
+        int32_t prop[max_spec_d];
+        const int32_t n = lookup_propose(t.slot().tok, m, std::min(max_spec_d, budget - 1), prop);
+        if (n >= std::min(lookup_min_props(), budget - 1)) {
+            for (int32_t j = 0; j < n && !greedy; ++j) {
+                if (!write_point_q(t, j, prop[j], err)) {
+                    return false;
+                }
+            }
+            s.kind = 2;
+            s.d = n;
+            s.lookup = true;
+            for (int32_t j = 0; j < n; ++j) {
+                s.prop[j] = prop[j];
+            }
+            s.to_draft_s = since(t0);
+            return true;
+        }
+    }
     if (!t.draft_step(d, r, err)) {
         return false;
     }
@@ -581,9 +678,25 @@ void engine::finish(slot_rt & x, const char * ended) {
     for (const step_info & st : x.steps) {
         joints += st.joint ? 1 : 0;
     }
+    int32_t lk_steps = 0, lk_acc = 0, lk_props = 0, lk_out = 0;
+    for (const step_info & st : x.steps) {
+        if (st.lookup) {
+            ++lk_steps;
+            lk_acc += st.a;
+            lk_props += st.d;
+            lk_out += st.n_out;
+        }
+    }
+    char lk[200] = "";
+    if (lookup_min_match() > 0) { // --fnfl-lookup: its steps among the speculative ones
+        snprintf(lk, sizeof(lk), "; lookup steps %d (proposals a step %.3f, accepted %.3f, tokens %.3f)", lk_steps,
+                 lk_steps ? double(lk_props) / lk_steps : 0.0, lk_steps ? double(lk_acc) / lk_steps : 0.0,
+                 lk_steps ? double(lk_out) / lk_steps : 0.0);
+    }
     const std::string who =
-        n_slots() > 1 ? "; joint rounds " + std::to_string(joints) + "; slot " + std::to_string(x.t->slot_index())
-                      : std::string();
+        std::string(lk) +
+        (n_slots() > 1 ? "; joint rounds " + std::to_string(joints) + "; slot " + std::to_string(x.t->slot_index())
+                       : std::string());
     snprintf(buf, sizeof(buf),
              "FNFL request: ended %s; steps %d (bootstrap %d, speculative %d, generate %d); tokens %d; tokens a "
              "speculative step %.3f; accepted drafts a speculative step %.3f; step wall ms median %.3f p90 %.3f (%s); "
@@ -1159,7 +1272,7 @@ void engine::step_joint_body(const int32_t * slots, int32_t n, joint_step_out * 
         }
         for (int32_t i = 0; i < nm && !drafted; ++i) {
             const int32_t k = mem[size_t(i)];
-            if (!step_propose(*dt[i], b[k], c_.spec_d, t0, s[k], err_)) {
+            if (!step_propose(*dt[i], b[k], c_.spec_d, t0, s[k], err_, nullptr, false)) {
                 leave(k, false, s[k]);
                 continue;
             }
