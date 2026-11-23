@@ -131,6 +131,9 @@ That run averaged 3.13 tokens a step, for 194.8 tokens/s. The step time barely m
   - Up to eight checkpoints are kept.
 - **Failures:** a chunk that fails publishes nothing, so the slot's state stays consistent.
 
+[`prefill-headroom.md`](prefill-headroom.md) has the leads for faster prompt reading and time to first token, from a
+survey of other engines, ranked.
+
 ## Memory
 
 Each card reserves everything at load, sized for the `-c` context, and allocates nothing while serving. [`fn/model/state.h`](../../fn/model/state.h) and `state.cpp` list every buffer with the formula for its size.

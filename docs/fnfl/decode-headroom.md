@@ -89,7 +89,31 @@ Upstream's 5-token verify on a box without the collapse takes 14.2 ms, against a
 exchange stall accounts for most of that difference. Draft acceptance is about 1.84 drafts a step at 3 proposals and
 2.13 at 4.
 
+## What to try next for decode: the shortlist (2026-11-23)
+
+Ranked by expected gain against effort. Today: ~183 tok/s on `bench.py` (3 proposals, both switches, 2× V100). The
+gains are estimates from other engines' reports and this doc's measurements, not measured on FNFL. The details are in
+the sections below.
+
+| # | Idea | Expected gain | Effort | Where it comes from |
+|---|---|---|---|---|
+| 1 | **Lookup (n-gram) drafts** within the 4-proposal limit, used when the context has a match | +30–60% on edit-heavy turns (agents rewriting files), ~0 on new prose; maybe +10–25% over an agentic session | medium (draft source, acceptance, tests) | sFNX, QEngine ([other engines](#other-engines-surveyed-2026-11-23)) |
+| 2 | **Adaptive draft count** from the draft head's confidence or recent acceptance (2–4 a step) | +3–8% | small–medium | QEngine (3–5 drafts from confidence), sFNX (acceptance-sized) |
+| 3 | **Host path for every decode exchange** (X-HC, X-A, X-F as well as X-HMIX), chosen at startup by timing real decode steps on each path, cached | +3–5% here (exchanges are ~8–9% of a step); also makes the right choice on other platforms automatically | medium | QEngine; this doc's measurements |
+| 4 | **The DFlash2 drafter** ([incoai/Qwen3.8-Flash-Next-DFlash2](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2)): 8-token blocks instead of the MTP chain | ReVolta reports +30% on English code (4× V100 NVLink); with FNFL's 5-row verify limit maybe +10–20% on code, less on Chinese or prose | large (a new drafter architecture in the engine) | ReVolta |
+| 5 | **Wider verify windows** (more than 5 rows) to use long lookup or DFlash2 drafts in full | lifts the ceiling of 1 and 4 on edits; on its own, nothing | large (`max_rows` = 5 is baked into the exchange layouts and kernels) | sFNX (16-row windows) |
+| 6 | Exchange shaving ([ranked ideas below](#ideas-for-later-ranked-by-expected-payoff), items 1–3) | +3–6% in total | medium | this doc |
+| 7 | Kernel profiling of the expert and dense products | unknown, 0–10% | medium–large | this doc |
+
+**Expected overall:** on general text, ~190–200 tok/s (+5–10%) from items 2, 3 and 6. On agentic coding with file
+edits, roughly 220–260 tok/s (+20–40%) once lookup drafts land, because those turns copy existing text. Measure on an
+edit-heavy replay, not only on `bench.py`, which has no edits. Ruled out: fine-tuning the MTP head, and multi-user
+batching on this box.
+
 ## Ideas for later, ranked by expected payoff
+
+These rank the exchange and kernel work. For code-editing work, **n-gram drafting** (from sFNX, in the next section)
+probably outweighs all of them. Try it before items 1–6.
 
 1. **Shave X-HC further (about 1.0–1.2 ms a step left; maybe +3–5%).** Part of it can't be removed: each card waits for
    the other's down phase to finish, plus a couple of microseconds of PCIe latency. Options:
@@ -119,6 +143,105 @@ Ruled out:
 - Fine-tuning the MTP head: Swift accepts drafts no worse than the base model (`docs/iq3s-swift.md`).
 - Multi-user batching on this box: no throughput gain, and 3–4 users don't fit.
 - Platform tweaks: listed above.
+
+## Ideas from another engine: sFNX (checked 2026-11-23)
+
+[sFNX](https://github.com/johnfink8/sfnx) (MIT, by johnfink8) runs the same model on V100s over PCIe Gen3. It also
+splits every layer across the cards, with GPU threads writing each layer's sums into the next card around a ring (fp16
+by default). **Most of its published numbers are for three cards. Check the card count before comparing anything with
+this two-card box.** All figures are the author's own (its `docs/benchmarks.md`), not reproduced here.
+
+| | sFNX, 3 cards (Unsloth Q4) | sFNX, 2 cards (Unsloth Q4, 36% of experts in RAM) | FNFL here, 2 cards (Swift IQ3_S, all in VRAM) |
+|---|---|---|---|
+| Code edit, greedy | 367–382 tok/s | 209–211 | not measured |
+| New code, greedy | 200–229 | 137–163 | ~180–190 (bench.py mix, greedy) |
+| Prose | 139 (T 1.0) | 109–119 (T 0.6) | ~180 (greedy; not comparable) |
+| Prompt read | 3,373 tok/s at 114k | ~2,830 at 32k; 114k in 42.1 s (~2,710) | ~3,560 at 21k; upstream 3,558 at 130k |
+| Warm turn, +2k on 30k, first token | 0.95 s median | not published | not measured |
+
+Not like for like: different quants (Q4 against IQ3_S, which reads fewer bytes), sFNX's two-card build serves a third of
+its experts from RAM, and the prompts and sampling differ. It wouldn't run usefully on this box anyway:
+- it doesn't support Swift (it requires the embeddings, shared expert and draft projections at Q8_0);
+- its two-card build keeps a pinned copy of every expert in RAM, likely more than 62 GB;
+- its decode sums are GPU threads writing into the other card, which would hit this board's write collapse;
+- it needs CUDA 12.9.
+
+Ideas worth taking, best first:
+
+1. **N-gram (prompt-lookup) drafting: probably the biggest decode lever for agentic coding.** Besides the MTP chain,
+   sFNX finds the recent tokens elsewhere in the context and drafts the continuation found there, 3 to 15 tokens. Edits
+   mostly copy existing code, so those drafts are accepted at a very high rate. On two cards it does ~210 tok/s on a code
+   edit against ~150 on new code, a ~40% lift. That lift is partly the n-gram drafts and partly edits being more
+   predictable. On three cards a verify window costs about 13 ms at 3 rows, 16 ms at 5 and 28 ms at 16.
+   - **The catch:** FNFL is built for at most 5 rows a verify step. `fn::xchg::max_rows` = 5 is baked into the
+     exchange slot layouts (`hc_own_at`, `hmix_layout`, `hcj_run_at`) and into the kernels' instantiations for B = 1..5.
+     Windows of 16 rows would be a large change.
+   - **Cheap first version:** when an n-gram match exists, draft its next tokens instead of running the MTP chain,
+     within the existing 4-proposal limit. That skips the ~1.5 ms draft step and should accept more on edits. Measure
+     on an edit-heavy replay (agentic sessions) as well as on `bench.py`, which has no edits.
+2. **Adaptive draft depth.** sFNX sizes each request's drafts from its measured acceptance and the cost of the extra
+   rows (`src/batch_plan.hpp`). FNFL uses a fixed `--fnfl-spec-d`. With the two switches on, 3 is best on average, but
+   code and prose differ. A simple rule that picks 2–4 from recent acceptance could add a few percent.
+3. **A link check at startup.** sFNX writes across every card pair before serving and warns when a link is under
+   1 GB/s. FNFL could time a burst of SM-issued peer stores at load. When they collapse, as on this X299 board, it
+   could say so and suggest `--fnfl-hmix-route host --fnfl-hc-packed on`. Small and cheap; useful to anyone else with
+   this platform.
+4. **For the prefill/TTFT work:** sFNX checkpoints at message boundaries (and every 4,096 tokens in a long first
+   message), so a changed system prompt is read again only from the last checkpoint before the change. It parks idle
+   conversations in host RAM (pageable, least recently used out first). FNFL keeps 8 checkpoints at multiples of 8,192
+   tokens. Its 0.95 s warm-turn figure is from three cards, so measure FNFL's own warm turns before setting a target.
+   Its prompt chunks are 4,096 rows (FNFL: 8,192, in two halves of 4,096).
+
+Not worth taking here:
+- **fp16 exchange payloads:** they halve the bytes but cost exactness (sFNX's own code and edit prompts go over its
+  KL bar on two cards with them), and FNFL's remaining exchange stall is only ~2% of a step after packing.
+- **The three-card layout:** this box has two cards.
+
+## Other engines surveyed (2026-11-23)
+
+A survey of engines that run Qwen3.8-Flash-Next, mostly on V100s. Every figure is the project's own claim, and the card
+count and quant differ from row to row, so compare within a row's hardware only. Prefill leads from the same survey
+are in [`prefill-headroom.md`](prefill-headroom.md).
+
+| Project | Hardware | Decode, one request | Prompt reading | Notes |
+|---|---|---|---|---|
+| [QEngine](https://github.com/bpx03/QEngine) | **2× RTX 3090** / 3× 3090 | 201–248 / 310–452 tok/s | 2 cards: 3,760–4,265 (10K), 5,179–7,134 (90K) | INT4 experts; prefill GEMMs use INT8 activations on INT8 tensor cores, which V100 doesn't have |
+| [ReVolta](https://github.com/Leonccaa/ReVolta) (built on [1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM)) | **4× V100-32GB** | 201 (one PCIe switch), 234 (NVLink) | 3,382 (8K), 3,016 (131K) | AWQ 4-bit; MTP4, or the DFlash2 drafter |
+| [llama.cpp-V100](https://github.com/1115714829/Llama.cpp-V100) | 2× / 6× V100-**16GB** | ~43 / 122.5 | 1,155–2,152 / 3,402 | experts spill to host RAM on 2 cards |
+| [Strata-V100](https://github.com/jmnargi/Strata-V100) | 2× V100-**16GB** (one card at x4) | 62–81 | ~1,000–2,100 | Strata fork; streams experts |
+| [qwen38-flash-next-2x3090](https://github.com/DominikBucko/qwen38-flash-next-2x3090) (vLLM) | 2× RTX 3090 + 128 GB RAM | 104–111 | up to 4,191 (131K) | experts in RAM |
+| [sFNX](https://github.com/johnfink8/sfnx) | 3× (2×) V100-32GB | 200–229 (137–163), new code | 3,373 (~2,710) | the previous section |
+| **FNFL here** | **2× V100-32GB** | **~183** (`bench.py` mix) | ~3,560 | Swift IQ3_S, all in VRAM |
+
+Also seen, not useful here:
+- [GooseLLM](https://github.com/haohervchb/GooseLLM) and [sglang-V100](https://github.com/haohervchb/sglang-V100):
+  V100 builds of vLLM and SGLang, mostly for the 27B model;
+- [Strata-AC922](https://github.com/eelgaev/Strata-AC922): IBM's POWER9 server with NVLink to the CPU;
+- the archived ninfer backport.
+
+On two V100s, FNFL's decode is the fastest found.
+
+Decode ideas from the survey (ranked in the shortlist above):
+- **QEngine's host path for every decode exchange.** It converged on the same fix as this doc. Each card writes its
+  exchange words once into pinned host memory and the other card reads them there; the attention exchanges are copied
+  into device memory in one step before use. It applies this to all decode exchanges, and at startup it runs a short
+  dummy decode on each path (one sequence, then four, interleaved rounds) and keeps the faster one. It caches the
+  result, keyed on the cards, links, driver and settings. Its finding is useful here: neither a microbenchmark nor an
+  idle all-reduce predicted which path wins; only real decode steps did. Prefill transfers get their own probe (pull
+  with SM loads when they're not slower than stores; else the copy engine), plus a data check that P2P writes really
+  arrive.
+- **Lookup drafts with confidence-sized draft counts.** QEngine drafts 3–5 tokens a step for one conversation,
+  picked from the MTP head's confidence, plus lookup drafts when recent tokens repeat earlier text. On 2× 3090 it does
+  226 tok/s on code against 201 on narrative; on 3× 3090, 452 against 310.
+- **DFlash2.** [incoai/Qwen3.8-Flash-Next-DFlash2](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2) is a
+  drafter with 5 sliding-window layers, an 8-token block and a 2,048-token window, reading the target's
+  hyper-connection streams (`hc_mean`). ReVolta runs it on V100 with CUDA graphs: 234 tok/s against 180 with MTP4 on
+  English code, one request, 4× V100 NVLink. MTP4 stays ReVolta's default because Chinese text and 8 concurrent
+  requests are faster with it.
+- **Kernel sources** (V100 ports, if profiling points at attention or GDN):
+  - flash-attention for V100 ([ai-bond](https://github.com/ai-bond/flash-attention-v100),
+    [zhinianqin](https://github.com/zhinianqin/flash-attention-v100)), and TileLang's FA-V100 (in GooseLLM);
+  - 1Cat-vLLM's grouped verify-attention and small-batch quantized products (also ported into llama.cpp-V100).
 
 ## Tools
 
