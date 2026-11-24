@@ -22,7 +22,10 @@
 
 namespace fn::round {
 
-constexpr int32_t n_version = 6; // 1 + the most rows a round writes (SP2: 5)
+// Wide verify (docs/fnfl/wide-verify.md): a round may write up to wide_rows rows (a lookup step's long proposal runs);
+// the 5-row kernels keep their own max_rows. The slots cover the widest round: 1 + wide_rows.
+constexpr int32_t wide_rows = 20;
+constexpr int32_t n_version = 1 + wide_rows; // 1 + the most rows a round writes (SP2: 5; wide verify: 20)
 
 // the physical slot of logical version v (0 .. 5) when the committed version is at slot cur (0 .. 5): one add and one
 // conditional subtract, no division
@@ -42,7 +45,7 @@ FN_ROUND_HD inline int32_t version_slot(uint32_t cur, int32_t v) {
 //   a cut to j >= 1 rows of the last step selects (1 - bank_pre, 1 - set_pre, j); a cut to 0 or a failure the
 //     pre-step word; k = 0 (bootstrap, draft rounds, a zero-version commit) leaves the word.
 // A round never writes its committed bank or set, so the pre-step word stays valid until the next round starts.
-constexpr int32_t gdn_max_steps = 5; // SP2: a round's rows
+constexpr int32_t gdn_max_steps = wide_rows; // a round's rows (SP2: 5; wide verify: 20)
 
 FN_ROUND_HD inline bool gdn_valid(uint32_t g) {
     return (g >> 2) <= static_cast<uint32_t>(gdn_max_steps);

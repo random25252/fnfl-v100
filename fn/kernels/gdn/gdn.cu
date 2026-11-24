@@ -133,7 +133,10 @@ __device__ __forceinline__ float warp_sum(float v) {
 //   evidence: GD1 (gd-test, gd-bench); simulator node gdn.recur (family gdn_recur).
 // FMS2 (build item 3, W3): the kernel's body on a's head and split blockIdx.x (core_kernel's, and a lane's of
 // core_lanes_kernel)
-template <int32_t B> __device__ __forceinline__ void core_body(const core_args & a) {
+// Wide verify (W): B is the capacity (wide_rows) and the launch's rows nb = a.rows (6 .. wide_rows) at run time. Every
+// row takes the same operations in the same order as in the B = 1..5 instances (the small loads go straight to shared
+// memory, the norms and record stores loop over their vectors), so a row's results do not depend on the instance.
+template <int32_t B, bool W = false> __device__ __forceinline__ void core_body(const core_args & a) {
     // the small values, one array (32-bit shared offsets): q [B][128], k [B][128], z [B][128], ssm_norm [128], v [B][22]
     constexpr int32_t o_q = 0, o_k = B * head_dim, o_z = 2 * B * head_dim, o_w = 3 * B * head_dim;
     constexpr int32_t o_v = o_w + head_dim, n_small = o_v + B * warps;
@@ -142,7 +145,9 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
     __shared__ float s_decay[B];
     __shared__ float s_beta[B];
     __shared__ int32_t s_last;
-    static_assert(2 * B <= warps && B <= v_warp, "warps 0..2B-1 run the norms, 0..B-1 write o and finish");
+    static_assert(W || (2 * B <= warps && B <= v_warp), "warps 0..2B-1 run the norms, 0..B-1 write o and finish");
+    static_assert(!W || (B <= warps && B <= 32), "wide: warps 0..nb-1 write o and finish, lanes 0..nb-1 the gates");
+    const int32_t nb = W ? a.rows : B;
 
     const int32_t h = static_cast<int32_t>(blockIdx.x) / n_split;
     const int32_t s = static_cast<int32_t>(blockIdx.x) % n_split;
@@ -158,7 +163,7 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
     const bool qk = tid < qk_threads;
     const bool zw = tid >= zw_first && tid < zw_first + head_dim;
     const bool vt = warp == v_warp && lane < n_rows;
-    const bool gt = warp == gate_warp && lane < B;
+    const bool gt = warp == gate_warp && lane < nb;
     const bool small = qk || zw || vt;
     const int32_t src_off = qk   ? (tid < head_dim ? q_first : k_first - head_dim) + g * head_dim + tid
                             : zw ? h * head_dim + tid - zw_first
@@ -166,13 +171,20 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
     const int32_t src_stride = zw ? n_value : n_channel;
     const int32_t dst = qk ? (tid < head_dim ? o_q : o_k - head_dim) + tid : zw ? o_z + tid - zw_first : o_v + lane;
     const int32_t dst_stride = vt ? warps : head_dim;
-    float x[B];
+    float x[W ? 1 : B];
     float wn = 0.0f, ga = 0.0f, gb = 0.0f, gdt = 0.0f, gaa = 0.0f;
     if (small) {
         const float * src = (zw ? a.z : a.conv) + src_off;
+        if constexpr (W) { // straight to shared memory: no register array of B values (40 registers a thread)
+#pragma unroll 1
+            for (int32_t b = 0; b < nb; ++b) {
+                s_f[dst + b * dst_stride] = src[b * src_stride];
+            }
+        } else {
 #pragma unroll
-        for (int32_t b = 0; b < B; ++b) {
-            x[b] = src[b * src_stride];
+            for (int32_t b = 0; b < B; ++b) {
+                x[b] = src[b * src_stride];
+            }
         }
         if (zw) {
             wn = a.norm_w[tid - zw_first];
@@ -195,9 +207,11 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
     // 2. while the state streams: the small values into shared memory, the gates; then the q and k norms, one warp a
     // (q or k, row) vector
     if (small) {
+        if constexpr (!W) {
 #pragma unroll
-        for (int32_t b = 0; b < B; ++b) {
-            s_f[dst + b * dst_stride] = x[b];
+            for (int32_t b = 0; b < B; ++b) {
+                s_f[dst + b * dst_stride] = x[b];
+            }
         }
         if (zw) {
             s_f[o_w + tid - zw_first] = wn;
@@ -216,8 +230,9 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
     __syncthreads();
     const float4 * s_q = reinterpret_cast<const float4 *>(s_f + o_q); // [B][32]
     const float4 * s_k = reinterpret_cast<const float4 *>(s_f + o_k);
-    if (warp < 2 * B) {
-        float4 * vec = reinterpret_cast<float4 *>(s_f + (warp % 2 == 0 ? o_q : o_k) + (warp / 2) * head_dim) + lane;
+#pragma unroll 1
+    for (int32_t vi = warp; vi < 2 * nb; vi += warps) { // one trip a warp in the 1..5 instances (2 B <= 22 warps)
+        float4 * vec = reinterpret_cast<float4 *>(s_f + (vi % 2 == 0 ? o_q : o_k) + (vi / 2) * head_dim) + lane;
         float4 v = *vec;
         float ss = v.x * v.x;
         ss = fmaf(v.y, v.y, ss);
@@ -234,8 +249,11 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
 
     // 3. ME11: the group's normalized k into the round's record set (split 0 of the group's first head, h = g)
     float * rec_out = a.rec + (1 - fn::round::gdn_set(gs)) * rec_set_floats;
-    if (h < n_group && s == 0 && tid < B * head_dim) {
-        rec_out[(tid / head_dim) * rec_step_floats + rec_k + h * head_dim + tid % head_dim] = s_f[o_k + tid];
+    if (h < n_group && s == 0) {
+#pragma unroll 1
+        for (int32_t i = tid; i < nb * head_dim; i += threads) { // one trip in the 1..5 instances (B 128 <= 704)
+            rec_out[(i / head_dim) * rec_step_floats + rec_k + h * head_dim + i % head_dim] = s_f[o_k + i];
+        }
     }
     // the committed matrix: the selector's k records replayed onto the bank's row, the recurrence's own operations
     const int32_t j_row = row0 + (has_row ? warp : n_rows - 1);
@@ -266,7 +284,7 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
     {
         const float scale = 1.0f / sqrtf(float(head_dim));
 #pragma unroll 1
-        for (int32_t b = 0; b < B; ++b) {
+        for (int32_t b = 0; b < nb; ++b) {
             const float4 kv = s_k[b * (head_dim / 4) + lane];
             const float4 qv = s_q[b * (head_dim / 4) + lane];
             const float dec = s_decay[b];
@@ -301,7 +319,7 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
 
     // 5. publish o, then the head's last block finishes the norm from its 128 values a row
     uint32_t * counter = static_cast<uint32_t *>(a.ws) + h;
-    if (warp < B && lane < n_rows) {
+    if (warp < nb && lane < n_rows) {
         a.gated[warp * n_value + h * head_dim + row0 + lane] = s_o[warp][lane];
         fence_acq_rel_gpu();
     }
@@ -314,7 +332,7 @@ template <int32_t B> __device__ __forceinline__ void core_body(const core_args &
         return;
     }
     fence_acq_rel_gpu();
-    if (warp < B) {
+    if (warp < nb) {
         const int32_t b = warp;
         float4 * gp = reinterpret_cast<float4 *>(a.gated + b * n_value + h * head_dim) + lane;
         const float4 o = __ldcg(gp);
@@ -350,6 +368,11 @@ template <int32_t B> __global__ void __launch_bounds__(threads, 2) core_kernel(c
     core_body<B>(a);
 }
 
+// wide verify: rows 6 .. wide_rows, one instance (core_body's W form)
+__global__ void __launch_bounds__(threads, 2) core_wide_kernel(const core_args a) {
+    core_body<wide_rows, true>(a);
+}
+
 // FMS2 (build item 3, W3): the joint verify round's lanes in one launch, grid.y = U: lane blockIdx.y's 144 blocks are
 // core_kernel's on its own arguments (its rows, state, records, selector, outputs and workspace counters)
 struct core_lanes_kargs {
@@ -359,6 +382,30 @@ struct core_lanes_kargs {
 template <int32_t B>
 __global__ void __launch_bounds__(threads, 2) core_lanes_kernel(const __grid_constant__ core_lanes_kargs p) {
     core_body<B>(p.a[blockIdx.y]);
+}
+
+// conv_silu at rows 6 .. wide_rows: the epilogue's operations a row in order (gdn_conv.cuh), rows a run-time count
+__global__ void __launch_bounds__(256) conv_wide_kernel(const conv_args a) {
+    const int32_t c = static_cast<int32_t>(blockIdx.x) * 256 + static_cast<int32_t>(threadIdx.x);
+    const uint32_t cur = *a.cur;
+    const conv_column cc = conv_column_load(a.hist, a.conv_w, c, cur);
+    float h0 = cc.h0, h1 = cc.h1, h2 = cc.h2;
+#pragma unroll 1
+    for (int32_t b = 0; b < a.rows; ++b) {
+        const float xb = a.qkv[b * n_channel + c];
+        float acc = h0 * cc.w.x;
+        acc = fmaf(h1, cc.w.y, acc);
+        acc = fmaf(h2, cc.w.z, acc);
+        acc = fmaf(xb, cc.w.w, acc);
+        a.out[b * n_channel + c] = acc / (1.0f + expf(-acc));
+        h0 = h1;
+        h1 = h2;
+        h2 = xb;
+        float * hv = a.hist + fn::round::version_slot(cur, b + 1) * hist_version_floats + c * n_hist;
+        hv[0] = h0;
+        hv[1] = h1;
+        hv[2] = h2;
+    }
 }
 
 // conv_silu: the epilogue alone, one thread a channel (gdn.h)
@@ -395,7 +442,7 @@ const void * core_of(int32_t rows) {
         case 5:
             return reinterpret_cast<const void *>(&core_kernel<5>);
         default:
-            return nullptr;
+            return rows > max_rows && rows <= wide_rows ? reinterpret_cast<const void *>(&core_wide_kernel) : nullptr;
     }
 }
 
@@ -408,7 +455,7 @@ size_t workspace_bytes() {
 namespace {
 
 bool core_ok(const core_args & a) {
-    return !(a.rows < 1 || a.rows > max_rows || !aligned16(a.conv) || !aligned16(a.z) || !aligned16(a.alpha) ||
+    return !(a.rows < 1 || a.rows > wide_rows || !aligned16(a.conv) || !aligned16(a.z) || !aligned16(a.alpha) ||
              !aligned16(a.beta) || !aligned16(a.dt) || !aligned16(a.a) || !aligned16(a.norm_w) || !aligned16(a.state) ||
              !aligned16(a.rec) || a.gsel == nullptr ||
              (a.rec < a.state + n_bank * state_version_floats && a.state < a.rec + n_rec_set * rec_set_floats) ||
@@ -436,8 +483,11 @@ bool core(const core_args & a, void * stream) {
         case 4:
             core_kernel<4><<<n_block, threads, 0, st>>>(a);
             break;
-        default:
+        case 5:
             core_kernel<5><<<n_block, threads, 0, st>>>(a);
+            break;
+        default: // wide verify: 6 .. wide_rows
+            core_wide_kernel<<<n_block, threads, 0, st>>>(a);
             break;
     }
     return cudaPeekAtLastError() == cudaSuccess;
@@ -450,7 +500,7 @@ bool core_lanes(int32_t lanes, const core_args * a, void * stream) {
     core_lanes_kargs p = {};
     const int32_t    rows = a[0].rows;
     for (int32_t u = 0; u < lanes; ++u) {
-        if (!core_ok(a[u]) || a[u].rows != rows || rows < 2) {  // FMS13: every lane at the round's R = d + 1
+        if (!core_ok(a[u]) || a[u].rows != rows || rows < 2 || rows > max_rows) {  // FMS13: the round's R = d + 1
             return false;
         }
         p.a[u] = a[u];
@@ -475,7 +525,7 @@ bool core_lanes(int32_t lanes, const core_args * a, void * stream) {
 }
 
 bool conv_silu(const conv_args & a, void * stream) {
-    if (a.rows < 1 || a.rows > max_rows || !aligned16(a.qkv) || !aligned16(a.conv_w) || !aligned16(a.hist) ||
+    if (a.rows < 1 || a.rows > wide_rows || !aligned16(a.qkv) || !aligned16(a.conv_w) || !aligned16(a.hist) ||
         a.cur == nullptr || !aligned16(a.out) || stream == nullptr) {
         return false;
     }
@@ -494,8 +544,11 @@ bool conv_silu(const conv_args & a, void * stream) {
         case 4:
             conv_kernel<4><<<n_channel / 256, 256, 0, st>>>(a);
             break;
-        default:
+        case 5:
             conv_kernel<5><<<n_channel / 256, 256, 0, st>>>(a);
+            break;
+        default: // wide verify: 6 .. wide_rows
+            conv_wide_kernel<<<n_channel / 256, 256, 0, st>>>(a);
             break;
     }
     return cudaPeekAtLastError() == cudaSuccess;

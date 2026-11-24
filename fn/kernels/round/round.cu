@@ -208,7 +208,7 @@ bool commit(const commit_args & a, void * stream) {
 }
 
 bool advance(uint32_t * cur, int32_t k, void * stream) {
-    if (cur == nullptr || k < 0 || k > max_rows || stream == nullptr) {
+    if (cur == nullptr || k < 0 || k > wide_rows || stream == nullptr) {
         return false;
     }
     if (k == 0) {
@@ -219,7 +219,7 @@ bool advance(uint32_t * cur, int32_t k, void * stream) {
 }
 
 bool advance(uint32_t * cur, uint32_t * gdn, int32_t k, bool prompt, void * stream) {
-    if (cur == nullptr || gdn == nullptr || k < 0 || k > max_rows || stream == nullptr) {
+    if (cur == nullptr || gdn == nullptr || k < 0 || k > wide_rows || stream == nullptr) {
         return false;
     }
     if (k == 0) {

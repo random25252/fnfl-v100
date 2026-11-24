@@ -51,6 +51,8 @@
 // hx = 0); h_out may equal hres (in place: each value is read and written by the same thread). Every pointer 16-byte
 // aligned; the X-PLE-STATS slots from fn::xchg::rings (msg::ple).
 
+#include "fn/kernels/round/version.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -63,7 +65,7 @@ constexpr int32_t n_channel = n_stream * n_own; // 5,120 card channels
 constexpr int32_t n_tap = 4;                    // ple.conv_kernel
 constexpr int32_t dilation = 3;                 // ple.ngram_size
 constexpr int32_t n_hist = (n_tap - 1) * dilation;
-constexpr int32_t n_version = 6; // SP2: fn::round::n_version (1 + max_rows)
+constexpr int32_t n_version = fn::round::n_version; // 1 + the widest round (version.h)
 constexpr int32_t max_rows = 5; // SP2
 constexpr int32_t n_stats = 13;
 constexpr int64_t hist_version_floats = int64_t(n_channel) * n_hist;

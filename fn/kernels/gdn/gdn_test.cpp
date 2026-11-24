@@ -556,18 +556,19 @@ void check_states(const std::string & where, const float * got, const ref_out<do
 
 struct card_gpu {
     cudaStream_t st = nullptr;
-    dev_buf qkv{size_t(gd::max_rows) * gd::n_channel * 4}, z{size_t(gd::max_rows) * gd::n_value * 4};
-    dev_buf cv{size_t(gd::max_rows) * gd::n_channel * 4}; // the epilogue's post-SiLU output, gdn_core's input
-    dev_buf alpha{size_t(gd::max_rows) * gd::n_head * 4}, beta{size_t(gd::max_rows) * gd::n_head * 4};
+    // wide verify: the round's buffers at wide_rows (inv's wide cycle); the pre-ME11 reference stays at max_rows
+    dev_buf qkv{size_t(gd::wide_rows) * gd::n_channel * 4}, z{size_t(gd::wide_rows) * gd::n_value * 4};
+    dev_buf cv{size_t(gd::wide_rows) * gd::n_channel * 4}; // the epilogue's post-SiLU output, gdn_core's input
+    dev_buf alpha{size_t(gd::wide_rows) * gd::n_head * 4}, beta{size_t(gd::wide_rows) * gd::n_head * 4};
     dev_buf conv{size_t(gd::n_channel) * gd::n_tap * 4}, dt{size_t(gd::n_head) * 4}, a{size_t(gd::n_head) * 4},
         norm{size_t(S) * 4};
     // ME11: the compact state, two banks and two record sets (gdn.h)
     dev_buf state{size_t(gd::n_bank) * gd::state_version_floats * 4};
     dev_buf rec{size_t(gd::n_rec_set) * gd::rec_set_floats * 4};
     dev_buf hist{size_t(gd::n_version) * gd::hist_version_floats * 4};
-    dev_buf gated{size_t(gd::max_rows) * gd::n_value * 4};
-    dev_buf codes{fn::act::codes_bytes(gd::max_rows, gd::n_value)};
-    dev_buf scales{fn::act::scales_bytes(gd::max_rows, gd::n_value)};
+    dev_buf gated{size_t(gd::wide_rows) * gd::n_value * 4};
+    dev_buf codes{fn::act::codes_bytes(gd::wide_rows, gd::n_value)};
+    dev_buf scales{fn::act::scales_bytes(gd::wide_rows, gd::n_value)};
     dev_buf ws{gd::workspace_bytes()};
     dev_buf cur{8};          // the committed slot (SR1), then the GDN selector (ME11)
     uint32_t cur_h = 0;      // their host mirrors
@@ -1078,8 +1079,9 @@ bool mapping(card_gpu & g, int32_t card, int32_t layer, const layer_weights & wg
     return true;
 }
 
-// batch invariance (NC1 section 2): the same positions in steps of B = 1 and in the cycle 1, 2, 3, 4, every step
-// committing its last version: outputs, the activation format and the final state and history bitwise equal
+// batch invariance (NC1 section 2): the same positions in steps of B = 1, in the cycle 1, 2, 3, 4 and (wide verify) in
+// the cycle 6, 9, 13, 17, 20, every step committing its last version: outputs, the activation format and the final
+// state and history bitwise equal
 bool invariance(card_gpu & g, int32_t layer, const layer_weights & w, worst & wr) {
     constexpr int32_t positions = 512;
     if (!put_weights(g, w)) {
@@ -1092,9 +1094,10 @@ bool invariance(card_gpu & g, int32_t layer, const layer_weights & w, worst & wr
             gen_inputs(rng, card_shape, 1, in);
         }
     }
-    std::vector<float> out[2], sc[2], st[2], hi[2];
-    std::vector<int8_t> cd[2];
-    for (int32_t run = 0; run < 2; ++run) {
+    std::vector<float> out[3], sc[3], st[3], hi[3];
+    std::vector<int8_t> cd[3];
+    static constexpr int32_t wide_cycle[5] = {6, 9, 13, 17, gd::wide_rows};
+    for (int32_t run = 0; run < 3; ++run) {
         if (!set_plain(g) ||
             !cuda_ok(cudaMemsetAsync(g.state_v0(), 0, gd::state_version_floats * 4, g.st), "zero state") ||
             !cuda_ok(cudaMemsetAsync(g.hist_v(0), 0, gd::hist_version_floats * 4, g.st), "zero history")) {
@@ -1102,7 +1105,9 @@ bool invariance(card_gpu & g, int32_t layer, const layer_weights & w, worst & wr
         }
         int32_t pos = 0, step = 0;
         while (pos < positions) {
-            const int32_t rows = run == 0 ? 1 : std::min(1 + step % 4, positions - pos);
+            const int32_t rows = run == 0 ? 1
+                                 : run == 1 ? std::min(1 + step % 4, positions - pos)
+                                            : std::min(wide_cycle[step % 5], positions - pos);
             step_inputs in;
             in.rows = rows;
             for (int32_t b = 0; b < rows; ++b) {
@@ -1130,16 +1135,18 @@ bool invariance(card_gpu & g, int32_t layer, const layer_weights & w, worst & wr
             return false;
         }
     }
-    const bool same_out = memcmp(out[0].data(), out[1].data(), out[0].size() * 4) == 0;
-    const bool same_act = cd[0] == cd[1] && memcmp(sc[0].data(), sc[1].data(), sc[0].size() * 4) == 0;
-    const bool same_state = memcmp(st[0].data(), st[1].data(), st[0].size() * 4) == 0 &&
-                            memcmp(hi[0].data(), hi[1].data(), hi[0].size() * 4) == 0;
-    printf("gd-test: inv L%d: %d positions, B = 1 against the cycle 1-4: outputs %s, activation format %s, final state "
-           "and history %s\n",
-           layer, positions, same_out ? "bitwise" : "DIFFER", same_act ? "bitwise" : "DIFFER",
-           same_state ? "bitwise" : "DIFFER");
-    if (!(same_out && same_act && same_state)) {
-        wr.fail("inv: a row's results depend on B");
+    for (int32_t run = 1; run < 3; ++run) {
+        const bool same_out = memcmp(out[0].data(), out[run].data(), out[0].size() * 4) == 0;
+        const bool same_act = cd[0] == cd[run] && memcmp(sc[0].data(), sc[run].data(), sc[0].size() * 4) == 0;
+        const bool same_state = memcmp(st[0].data(), st[run].data(), st[0].size() * 4) == 0 &&
+                                memcmp(hi[0].data(), hi[run].data(), hi[0].size() * 4) == 0;
+        printf("gd-test: inv L%d: %d positions, B = 1 against the cycle %s: outputs %s, activation format %s, final "
+               "state and history %s\n",
+               layer, positions, run == 1 ? "1-4" : "6, 9, 13, 17, 20 (wide)", same_out ? "bitwise" : "DIFFER",
+               same_act ? "bitwise" : "DIFFER", same_state ? "bitwise" : "DIFFER");
+        if (!(same_out && same_act && same_state)) {
+            wr.fail(run == 1 ? "inv: a row's results depend on B" : "inv: a wide round's rows differ from B = 1");
+        }
     }
     return true;
 }
@@ -1270,8 +1277,8 @@ bool rejects(card_gpu & g) {
     norec.rec = nullptr;
     overlap.rec = g.state.f() + gd::state_version_floats; // ME11: the records inside the second bank
     r0.rows = 0;
-    r6.rows = 6; // SP2: rows 1..5
-    r6.gated_q.rows = 6;
+    r6.rows = gd::wide_rows + 1; // rows 1..wide_rows (SP2: 1..5; wide verify: up to 20)
+    r6.gated_q.rows = gd::wide_rows + 1;
     mis.state = g.state.f() + 1;
     nul.ws = nullptr;
     qk.gated_q.k = 2560;
@@ -1287,9 +1294,11 @@ bool rejects(card_gpu & g) {
     c1.hist = g.hist.f() + 1;
     c2.rows = 1;
     c2.cur = nullptr;
+    gd::conv_args c21 = c; // past wide_rows
+    c21.rows = gd::wide_rows + 1;
     const bool rej = !gd::core(r0, g.st) && !gd::core(r6, g.st) && !gd::core(mis, g.st) && !gd::core(nul, g.st) &&
                      !gd::core(nocur, g.st) && !gd::conv_silu(c2, g.st) && !gd::core(qk, g.st) &&
-                     !gd::core(a, nullptr) && !gd::conv_silu(c, g.st) && !gd::conv_silu(c1, g.st) &&
+                     !gd::core(a, nullptr) && !gd::conv_silu(c, g.st) && !gd::conv_silu(c1, g.st) && !gd::conv_silu(c21, g.st) &&
                      !gd::core(norec, g.st) && !gd::core(overlap, g.st);
     printf("gd-test: rejected arguments: %s\n", rej ? "all twelve rejected" : "FAIL");
     return rej && cuda_ok(cudaStreamSynchronize(g.st), "sync");

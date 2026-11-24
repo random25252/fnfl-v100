@@ -28,6 +28,7 @@
 // set 1 - r; the frame's commit moves cur and the selector (SR1: a selection, no copy).
 
 #include "fn/kernels/act/act.h"
+#include "fn/kernels/round/version.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -44,8 +45,9 @@ constexpr int32_t v_first = 2048;
 constexpr int32_t n_value = 3072; // value channels a card (z, the output)
 constexpr int32_t n_tap = 4;      // ssm_d_conv
 constexpr int32_t n_hist = 3;     // history taps
-constexpr int32_t n_version = 6;  // 1 + max_rows
-constexpr int32_t max_rows = 5; // SP2
+constexpr int32_t n_version = fn::round::n_version; // 1 + the widest round (version.h)
+constexpr int32_t max_rows = 5; // SP2: the 5-row instances
+constexpr int32_t wide_rows = fn::round::wide_rows; // wide verify: core and conv_silu take rows up to this
 constexpr int32_t n_split = 6; // blocks a head
 constexpr int64_t state_version_floats = int64_t(n_head) * head_dim * head_dim; // one bank
 constexpr int64_t hist_version_floats = int64_t(n_channel) * n_hist;
@@ -56,13 +58,13 @@ constexpr int32_t rec_k = 0;                                // [8][128] the norm
 constexpr int32_t rec_decay = rec_k + n_group * head_dim;   // [24] each head's decay, padded to 32 floats
 constexpr int32_t rec_delta = rec_decay + 32;               // [24][128] delta of each (head, value row)
 constexpr int32_t rec_step_floats = rec_delta + n_head * head_dim;
-constexpr int64_t rec_set_floats = int64_t(max_rows) * rec_step_floats;
+constexpr int64_t rec_set_floats = int64_t(wide_rows) * rec_step_floats;
 constexpr int64_t banks_bytes = int64_t(n_bank) * state_version_floats * 4;
 constexpr int64_t records_bytes = int64_t(n_rec_set) * rec_set_floats * 4;
 static_assert(rec_step_floats * 4 == 16512 && rec_delta % 4 == 0 && rec_step_floats % 4 == 0,
               "a step is 16,512 bytes, its pieces 16-byte aligned");
-static_assert(banks_bytes == 3145728 && records_bytes == 165120 && records_bytes % 256 == 0,
-              "two banks and two five-step sets: 3,310,848 bytes a layer and card");
+static_assert(banks_bytes == 3145728 && records_bytes == 660480 && records_bytes % 256 == 0,
+              "two banks and two 20-step sets: 3,806,208 bytes a layer and card");
 
 static_assert(q_first + n_group * head_dim == k_first && k_first + n_group * head_dim == v_first, "Q, K, V tile");
 static_assert(v_first + n_value == n_channel && n_value == n_head * head_dim, "V is the value heads");
@@ -86,11 +88,11 @@ struct core_args {
     float * gated = nullptr;        // [rows][3072] the gated norm's output, F32
     act::out_view gated_q = {};     // the same in the activation format: codes [rows][3072], scales [rows][96]
     void * ws = nullptr;            // workspace_bytes()
-    int32_t rows = 0;               // 1..5
+    int32_t rows = 0;               // 1..wide_rows (6.. the wide instance)
 };
 
 // Enqueue gdn_core on stream (a cudaStream_t). False, with nothing enqueued, for an argument outside the contract (rows
-// outside 1..5, a null pointer, a pointer not 16-byte aligned, gated_q not rows x 3072, a null stream, banks and
+// outside 1..wide_rows, a null pointer, a pointer not 16-byte aligned, gated_q not rows x 3072, a null stream, banks and
 // records that overlap); false after a
 // failed launch submission (the CUDA error is left for the caller).
 bool core(const core_args & a, void * stream);
@@ -109,7 +111,7 @@ struct conv_args {
     float * hist = nullptr;         // [6][5120][3]: logical version 0 read, versions 1..rows written
     const uint32_t * cur = nullptr; // device: the committed slot, 0..5 (fn::round::version_slot)
     float * out = nullptr;          // [rows][5120] post-SiLU
-    int32_t rows = 0;               // 1..5
+    int32_t rows = 0;               // 1..wide_rows
 };
 // False, with nothing enqueued, for an argument outside the contract (rows, null or unaligned pointers, null stream);
 // false after a failed launch submission.

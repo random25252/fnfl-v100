@@ -1121,6 +1121,11 @@ int fnfl_state_test(int argc, char ** argv, bool kv_q8) {
                     }
                 }
             }
+            // wide verify: 21 slots (1 + 20 rows) are more than the cases above reach; full five-row rounds until
+            // every slot has been the committed one
+            for (int32_t extra = 0; ok && __builtin_popcount(t.slots) < rd::n_version && extra < 64; ++extra) {
+                ok = s.run_case(max_rows, max_rows, max_rows, 1 + extra % max_rows, false);
+            }
             for (const int32_t mask : {3, 1, 2}) {
                 for (const int32_t k : {3, 2}) {
                     ok = ok && s.error_case(3, k, mask);
