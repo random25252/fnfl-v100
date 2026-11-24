@@ -307,6 +307,40 @@ and cold starts of many small launches. Removing that needs fewer synchronizatio
 path), not per-kernel tuning. Remaining kernel items (the up products on all 72 SMs, a leaner low-rank finish) are
 worth ~1% each.
 
+## Where decode can still go: measured ceilings and a fresh survey (2026-11-24)
+
+**The product kernels alone (no-go).** Dense bench at 4 rows and Nsight Compute on three typical launches: the big
+products stream at 57–84% of bandwidth warm; each launch carries ~7 µs (warm) to ~15 µs (cold) on top of its weight
+read, ~144 dense launches a step. The top stall is instruction fetch (the dense product kernel is one 212 KB kernel for
+every format, above the 128 KB instruction cache); the small launches also wait at their split-K barriers. The weights
+are already read evict-first so code stays in L2 (upstream's XB1; `dp-bench l2keep` confirms a 1 MB normal set
+survives 12 MB of evict-first streaming). Per-launch shaving might give +3–5%, not the +10–15% estimated above.
+
+**B's ceiling (fewer, persistent kernels).** Built from measurements in hand (benches warm, the HC timeline, the wait
+counters, the traces), no new runs: a 4-row step at short context could fall from ~14.2 ms to ~11.3 ms if B removes
+the waiting and gaps only (+26%), ~9.2 ms if it also removed the cold starts (+35%). Attention, GDN, the draft, the
+head and the sampler (~2.6 ms) are carried at today's time, so the ceiling can't oversell B. The fused HC launch is a
+small version of B and supports the lower end: fusing saved ~3 µs a boundary (33.4 against 36.2 µs alone), and its
+cold costs stayed. Realistic at 60–80% of the ceiling: ~+15–25%, at every context length. The way to a trustworthy
+number short of building it: a one-layer persistent prototype on both cards (~1–2 days of agent work).
+
+**DFlash2 (block-diffusion drafter) is a poor fit here.** It drafts an 8-token block in one pass of a 5-layer model fed
+the target's states at layers 5, 15, 25, 35 and 45; on 2× A100 it lifts accepted tokens a step from 2.98 (MTP-3) to
+4.08 and decode 180 → 225 tok/s ([vllm-backport #128](https://github.com/wtdcode/vllm-backport/pull/128)). Its
+per-position acceptance falls from ~0.81 to ~0.22 by the 7th token. Here each extra verify row costs ~1.5 ms (~10% of a
+step), so: at 4 drafts (5 rows, fits today) ~3.4 tokens a step at ~15.7 ms, about +4%; at 7 drafts (8 rows, needs
+wider windows) ~4.1 at ~20 ms, about −2%. Estimates from the published acceptance, not measured on FNFL. Tree
+verification hits the same per-row cost. Wider windows pay only where acceptance is near-perfect: copied text
+(lookup, or suffix decoding, which a software-engineering study found 2.14× against prompt lookup's 1.44×,
+[arXiv 2604.26469](https://arxiv.org/pdf/2604.26469)).
+
+**Survey update.** Newer V100 projects are all slower than FNFL on two cards: Strata-V100 (release of 2026-11-16)
+62–81 tok/s; NInfer's V100 re-measure (2026-11-23) 89–119; 1Cat-vLLM on 4× V100 ~45 decode, ~3,200 prompt; an SGLang
+Volta port on 4× V100 ~100 and ~3,000; a dual-GPU runtime on two Ampere CMP 170HX ~93. The fastest two-card number
+found is [Basalt](https://helix.ml/blog/basalt-qwen38-flash-next-rtx-pro-6000) on two RTX PRO 6000 Blackwell: 229
+tok/s, ~5,000 tok/s prompt (IQ3_S, a 7-token built-in drafter). The one new large prefill lead, RidgeFill, is lossy and
+is in [`prefill-headroom.md`](prefill-headroom.md).
+
 ## Ideas for later, ranked by expected payoff
 
 These rank the exchange and kernel work. For code-editing work, **n-gram drafting** (from sFNX, in the next section)

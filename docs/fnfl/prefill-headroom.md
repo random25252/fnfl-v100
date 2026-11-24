@@ -436,6 +436,18 @@ conversations of 32K, or 6–8 of 131K. NVMe could be a second tier (ReVolta: a 
   long conversation (a full re-read after a switch). Frequent ones make parking worth its 1–2 weeks; the pieces it
   needs are listed in the first bullet above.
 
+## A lossy lead: RidgeFill (2026-11-24, not built)
+
+[RidgeFill](https://arxiv.org/abs/2611.09709) (preprint, Nov 2026) runs the early layers exactly for every prompt token
+and, for older prompt rows, predicts the late layers' inputs from the split layer's state with a per-layer linear map
+fitted once in closed form (no training). Those layers then only write the row's K/V or GDN state, skipping its MLP
+and experts; the last ~2K tokens and some selected rows run exactly, and decode runs the full model. On
+Qwen3.8-Flash-Next (vLLM, two R9700, split at layer 24): prefill 1.50–1.60× at 9K–32K, 1.74× at 64K; needle retrieval
+99.8 against 100, perplexity on new tokens +2.65% (its interval includes zero). On a smaller dense model some
+extraction tasks lost 10–14 points. For FNFL it would break the reference contract, so only as an opt-in mode; it is
+still the largest prompt lever found, and needs no kernel rewrite (a calibration tool, a skip path in the prompt
+layers, quality checks): roughly 1–3 weeks.
+
 ## The realistic maximum with code changes, and the path (2026-11-24, estimates)
 
 Per 8,192-token chunk (today ~2.08 s, ~3,930 tok/s with all the switches):
