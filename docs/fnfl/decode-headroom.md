@@ -321,8 +321,51 @@ counters, the traces), no new runs: a 4-row step at short context could fall fro
 the waiting and gaps only (+26%), ~9.2 ms if it also removed the cold starts (+35%). Attention, GDN, the draft, the
 head and the sampler (~2.6 ms) are carried at today's time, so the ceiling can't oversell B. The fused HC launch is a
 small version of B and supports the lower end: fusing saved ~3 µs a boundary (33.4 against 36.2 µs alone), and its
-cold costs stayed. Realistic at 60–80% of the ceiling: ~+15–25%, at every context length. The way to a trustworthy
-number short of building it: a one-layer persistent prototype on both cards (~1–2 days of agent work).
+cold costs stayed. Realistic at 60–80% of the ceiling was put at ~+15–25%; the probe below brought that down to ~+3–8%.
+
+**B probed: the realistic gain is ~+3–8%, not +15–25% (2026-11-24).** `docs/iq3s-tools/b/boundary.cu.txt`, one card,
+16–64 dependent phases streaming evict-first weights (72 blocks × 512 threads), µs a phase:
+
+| Weights a phase | Separate kernels (graph) | One persistent kernel, grid barriers | Persistent, next phase's weights prefetched before the barrier |
+|---|---|---|---|
+| none | 2.6–2.75 | 2.2–2.5 | 2.3–2.6 |
+| 1 MB | 3.9 | 3.5–3.8 | 3.6–3.9 |
+| 3 MB | 6.2 | 5.9–6.2 | 5.3–5.6 |
+| 8 MB | 11.3 | 11.5 | 10.3 |
+
+- A cooperative grid barrier costs about what a graph kernel boundary does here (~2.5 µs), so fusing alone saves
+  0.1–0.4 µs a boundary.
+- Only a persistent kernel can stream the next phase's weights across the barrier (Volta has no overlap of dependent
+  launches): ~0.7–1 µs a boundary, for phases of a few MB.
+- The waits for the other card are data dependencies and stay. The ceiling above assumed they would go, so it was
+  optimistic.
+- Over ~800 boundaries a step, most of them tiny: ~0.4–1 ms, **~+3–8%**. The one-layer prototype was not built.
+
+**Cold code is not the remaining cost either.** The weights (dense `ldw*`, the experts' codecs), the GDN state
+(`__ldcs`/`__stcs`) and the HC weights are already read evict-first so the code stays in L2 (upstream's XB1, from CR3).
+The HC phases in real decode match the bench's warm-code timings (low-rank ~2.1 µs, up products ~4.2, finish ~1.9 µs
+against ~1.5 / 4.2 / 1.4 warm and ~4.1 / 6.4 / 4.3 cold), so decode's code comes from L2, not DRAM. What is left a
+launch is instruction-fetch latency from L2, kernel start-up and the split-K finishes, spread over ~800 launches, plus
+the cross-card waits: no single lever of more than a few percent was found.
+
+**Fundamentally different designs, for one user on these two cards (2026-11-24, assessment, not measured):**
+- **Layer split (pipeline):** one hand-off a step instead of ~200, but for one conversation the cards work in turn, each
+  streaming twice the weights with the same ~800 launches in series: slower (a dual-GPU pipeline runtime gets ~93 tok/s
+  on comparable cards). It pays only with several concurrent requests.
+- **Expert parallelism** (whole experts a card): no fewer syncs, plus load imbalance at 4 rows. No win.
+- **Overlapped speculation:** draft step n + 1 while step n verifies, assuming full acceptance, and redo it otherwise.
+  Hides the ~1.15 ms draft step: maybe +5–8%, the one structural idea with a clear gain here. Fiddly (the draft works
+  on a guessed state).
+- **Megakernels with continuous weight streaming:** they pay on Ampere and later through `cp.async`, TMA and
+  programmatic dependent launch; Volta has none of these, which is why the B probe came out small.
+- **Approximate late layers** (RidgeFill's idea, for decode): lossy, research-grade; not considered.
+- **Hardware:** the step change. NVLink or one PCIe switch removes most of the hand-off cost (upstream's 5-row verify
+  is ~14.2 ms on a board without the write collapse); a third card scales decode (sFNX: ~200–230 tok/s on three V100s
+  against ~140–160 on two). The cards can't move on this box.
+
+**Software left, all measured or bounded above:** overlapped speculation (~+5–8%), B (~+3–8%), per-launch shaving
+(~+3–5%), each weeks of work; wider verify windows with lookup or suffix drafts (+20–40% on edits only). Together
+perhaps +10–20% on general text, not a step change.
 
 **DFlash2 (block-diffusion drafter) is a poor fit here.** It drafts an 8-token block in one pass of a 5-layer model fed
 the target's states at layers 5, 15, 25, 35 and 45; on 2× A100 it lifts accepted tokens a step from 2.98 (MTP-3) to

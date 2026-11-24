@@ -1,0 +1,77 @@
+// Build: cp boundary.cu.txt boundary.cu && nvcc -O3 -arch=sm_70 -o boundary boundary.cu (one card, ~1 s). Columns: per-phase
+// time as separate kernels in a graph / one cooperative kernel with grid barriers / the same with the next phase's
+// weights prefetched into L2 before each barrier (2026-11-24: decode-headroom.md "B probed").
+// B probe: the cost of a kernel boundary on this box. N dependent phases, each streaming W bytes of "weights"
+// (evict-first 16-byte loads, as the engine's products) and reading the previous phase's small output: (A) N kernels
+// captured in a CUDA graph, (B) one cooperative kernel with a grid barrier between phases. 72 blocks x 512 threads.
+#include <cooperative_groups.h>
+#include <cstdio>
+#include <vector>
+#include <algorithm>
+#include <cuda_runtime.h>
+namespace cg = cooperative_groups;
+constexpr int NB = 72, NT = 512;
+__device__ __forceinline__ uint4 ldcs4(const uint4 * p) { uint4 v; asm volatile("ld.global.cs.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(v.x),"=r"(v.y),"=r"(v.z),"=r"(v.w) : "l"(p)); return v; }
+__device__ __forceinline__ void phase(const uint4 * w, size_t n16, const float * in, float * out, int k) {
+  const int t = blockIdx.x * NT + threadIdx.x;
+  float dep = __ldcg(in + (t & 1023)); // depends on the previous phase's output
+  uint32_t acc = __float_as_uint(dep);
+  for (size_t i = t; i < n16; i += size_t(NB) * NT) { uint4 v = ldcs4(w + i); acc ^= v.x + v.y * 3u + v.z * 5u + v.w * 7u; }
+  // block reduce to keep the loads live
+  __shared__ uint32_t s[NT]; s[threadIdx.x] = acc; __syncthreads();
+  for (int o = NT / 2; o > 0; o >>= 1) { if (threadIdx.x < o) s[threadIdx.x] ^= s[threadIdx.x + o]; __syncthreads(); }
+  if (threadIdx.x < 1024 / NB + 1) { int j = blockIdx.x * (1024 / NB + 1) + threadIdx.x; if (j < 1024) out[j] = __uint_as_float((s[0] & 0x007fffffu) | 0x3f800000u) + float(k); }
+}
+__global__ void __launch_bounds__(NT) one(const uint4 * w, size_t n16, const float * in, float * out, int k) { phase(w, n16, in, out, k); }
+template <int PF>
+__global__ void __launch_bounds__(NT) fused(const uint4 * w, size_t n16, size_t stride16, float * buf, int nph) {
+  cg::grid_group g = cg::this_grid();
+  for (int k = 0; k < nph; ++k) {
+    phase(w + size_t(k) * stride16, n16, buf + (k & 1) * 1024, buf + ((k + 1) & 1) * 1024, k);
+    if (PF && k + 1 < nph) { // the next phase's weights into L2 before the barrier (they don't depend on it)
+      const char * nx = reinterpret_cast<const char *>(w + size_t(k + 1) * stride16);
+      const size_t lines = n16 * 16 / 128;
+      for (size_t i = blockIdx.x * NT + threadIdx.x; i < lines; i += size_t(NB) * NT) asm volatile("prefetch.global.L2 [%0];" :: "l"(nx + i * 128));
+    }
+    g.sync();
+  }
+}
+int main() {
+  cudaSetDevice(0);
+  cudaStream_t st; cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking);
+  const size_t pool = size_t(1) << 30; // 1 GiB of weights, rotated so each replay reads fresh lines
+  uint4 * w; cudaMalloc(&w, pool); cudaMemset(w, 1, pool);
+  float * buf; cudaMalloc(&buf, 2 * 1024 * 4); cudaMemset(buf, 0, 8192);
+  cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b);
+  printf("%8s %4s %10s %10s %10s %12s\n", "MB/phase", "N", "graph us", "fused us", "fused+pf", "us/phase g/f/pf");
+  for (double mb : {0.0, 0.25, 1.0, 3.0, 8.0}) for (int N : {16, 64}) {
+    const size_t n16 = size_t(mb * 1048576) / 16, stride16 = std::max<size_t>(n16, 1);
+    if (stride16 * 16 * N * 4 > pool) continue;
+    // graph A: N kernels; graph B: one cooperative kernel. 4 rotations of the weight region so L2 doesn't help
+    cudaGraphExec_t ga[4], gb[4], gc[4];
+    for (int r = 0; r < 4; ++r) {
+      const uint4 * wr = w + size_t(r) * stride16 * N;
+      cudaGraph_t g;
+      cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal);
+      for (int k = 0; k < N; ++k) one<<<NB, NT, 0, st>>>(wr + size_t(k) * stride16, n16, buf + (k & 1) * 1024, buf + ((k + 1) & 1) * 1024, k);
+      cudaStreamEndCapture(st, &g); cudaGraphInstantiate(&ga[r], g, 0); cudaGraphDestroy(g);
+      cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal);
+      size_t n = n16, s16 = stride16; float * bb = buf; int nph = N; const uint4 * ww = wr;
+      void * args[] = {&ww, &n, &s16, &bb, &nph};
+      cudaLaunchCooperativeKernel((void *)fused<0>, NB, NT, args, 0, st);
+      cudaStreamEndCapture(st, &g); cudaGraphInstantiate(&gb[r], g, 0); cudaGraphDestroy(g);
+      cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal);
+      cudaLaunchCooperativeKernel((void *)fused<1>, NB, NT, args, 0, st);
+      cudaStreamEndCapture(st, &g); cudaGraphInstantiate(&gc[r], g, 0); cudaGraphDestroy(g);
+    }
+    auto time = [&](cudaGraphExec_t * gx) {
+      std::vector<float> v;
+      for (int it = 0; it < 40; ++it) { cudaEventRecord(a, st); cudaGraphLaunch(gx[it & 3], st); cudaEventRecord(b, st); cudaEventSynchronize(b); float ms; cudaEventElapsedTime(&ms, a, b); if (it >= 8) v.push_back(ms * 1000); }
+      std::sort(v.begin(), v.end()); return v[v.size() / 2];
+    };
+    const float tA = time(ga), tB = time(gb), tC = time(gc);
+    printf("%8.2f %4d %10.1f %10.1f %10.1f   %5.2f/%5.2f/%5.2f  floor %5.2f %s\n", mb, N, tA, tB, tC, tA / N, tB / N, tC / N,
+           mb * 1048576 / 1021.6e3, cudaGetErrorString(cudaGetLastError()));
+    for (int r = 0; r < 4; ++r) { cudaGraphExecDestroy(ga[r]); cudaGraphExecDestroy(gb[r]); cudaGraphExecDestroy(gc[r]); }
+  }
+}
