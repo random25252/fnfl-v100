@@ -382,6 +382,16 @@ The draft head's confidence does not predict rejections well enough to beat a fi
 edits lookup drafts (4 proposals) already take that gain. The oracle's +12.8% is what a much better stopping signal
 could reach; none is known. Not built.
 
+**The step's host side, checked (2026-11-24): nothing to gain.** From the phase 0 trace, GPU 0 sits idle only
+~0.18 ms a step across the three host waits (draft → verify 124 µs, verify → catch-up 37 µs, catch-up → next draft
+22 µs). Each card's `cudaGraphLaunch` of a verify graph (~800 nodes) takes ~300 µs of host time, untraced, and the
+two run one after the other, so card 1 starts ~0.3 ms after card 0. Launching card 1's graph from a second host thread
+(bitwise the same) brought card 1's submission to +443 µs from the post against ~600 sequential (the driver serializes
+part of it), and left the step times unchanged (14.73 / 15.64 / 15.07 ms against 14.83 / 15.49 / 15.09 on the three
+`decreq` requests): the skew is not on the critical path. Not kept. A "deepen when sure" draft rule (draft a 4th only
+when the first three are jointly >90% confident) gave +2.3% on the logged general steps with in-sample thresholds,
+T > 0 only: ~+1–2% realistic, not built.
+
 **DFlash2 (block-diffusion drafter) is a poor fit here.** It drafts an 8-token block in one pass of a 5-layer model fed
 the target's states at layers 5, 15, 25, 35 and 45; on 2× A100 it lifts accepted tokens a step from 2.98 (MTP-3) to
 4.08 and decode 180 → 225 tok/s ([vllm-backport #128](https://github.com/wtdcode/vllm-backport/pull/128)). Its
