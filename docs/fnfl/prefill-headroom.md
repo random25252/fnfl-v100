@@ -448,6 +448,32 @@ extraction tasks lost 10–14 points. For FNFL it would break the reference cont
 still the largest prompt lever found, and needs no kernel rewrite (a calibration tool, a skip path in the prompt
 layers, quality checks): roughly 1–3 weeks.
 
+**Speed measured (2026-11-24): ~1.3× on this engine.** The authors' release
+([ridgefill-data](https://github.com/Approximate-Science/ridgefill-data), Apache-2.0) has calibration code and
+ready-made Flash-Next maps on Hugging Face (24 maps for layers 24–47, each 2,560 × 10,240 from the four streams entering
+layer 24 to the layer's input, int8 with scales: 0.60 GiB, so ~0.3 GiB a card split, inside the ~0.47 GiB free at
+147,456 cells); its vLLM engine is not public. A skip path in FNFL's prompt pass (`docs/iq3s-tools/rf/skip_path.patch`,
+env `FNFL_RF_SPLIT=24`; garbage outputs, timing only) leaves out, in layers 24–47, both HC mixes, the GDN and QSA
+output products, QSA attention and the whole FFN, and keeps the input products, the GDN state updates, the K/V and
+index-key writes and every exchange's bookkeeping. `ttft_bench.py`, cache-busted, two reps:
+
+| Prompt | Exact | Skip path, every row filled | + maps and the exact 2K tail (estimate) |
+|---|---|---|---|
+| 32K | 8.36 s (3,925 tok/s) | 6.12 s (5,366), 1.37× | ~6.4 s, **~1.30×** |
+| 64K | 16.75 s (3,916) | 12.16 s (5,398), 1.38× | ~12.7 s, **~1.32×** |
+
+- The maps' GEMM (4,096 × 10,240 × 1,280 a card a half, `docs/iq3s-tools/rf/mapgemm.cu.txt`) takes 1.35 ms with
+  cuBLAS (79 TFLOP/s): ~65 ms a chunk, ~100 ms at FNFL's own kernels' rate.
+- The quality mode (3–10% of rows exact) would land around ~1.2–1.25×.
+- Telemetry: GPU 0 averaged 61 °C core (peak 70), HBM peak 72 °C, 218 W with the 250 W cap in 75 of 192 samples; GPU 1
+  peak 61 °C; no thermal throttling.
+- Lower than the paper's 1.5–1.6×: their engine streams two-thirds of the experts from host memory, so the skipped
+  FFN is a bigger share of their prefill.
+- Not done: quality on Swift (their maps were fitted on an MXFP4/FP8 build), which decides whether ~1.3× is worth a
+  lossy mode. **Not pursued for now (2026-11-24):** ~1.3× for a lossy opt-in mode was judged not worth the quality
+  work yet. To revisit: load the published maps, compare against exact prefill on retrieval tests and real agent
+  prompts, refit on Swift if they transfer poorly, then turn the patch into a real path.
+
 ## The realistic maximum with code changes, and the path (2026-11-24, estimates)
 
 Per 8,192-token chunk (today ~2.08 s, ~3,930 tok/s with all the switches):

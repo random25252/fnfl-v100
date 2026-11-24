@@ -1,0 +1,145 @@
+diff --git a/fn/model/prompt.cpp b/fn/model/prompt.cpp
+index 3303dca..d8463b3 100644
+--- a/fn/model/prompt.cpp
++++ b/fn/model/prompt.cpp
+@@ -28,6 +28,7 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <mutex>
+ #include <string>
+@@ -77,6 +78,21 @@ constexpr int64_t al(int64_t n) {
+     return (n + 255) / 256 * 256;
+ }
+ 
++// EXPERIMENT (RidgeFill skip-path timing, FNFL_RF_SPLIT=L, unset/0 off): in layers L .. 47 the launches RidgeFill
++// skips for filled prompt rows are not made (both HC mixes, GDN and QSA outputs, QSA attention, the FFN); the input
++// products, the GDN state update, the K/V and index-key writes and all exchange bookkeeping run. Outputs are garbage.
++int32_t rf_split() {
++    static const int32_t v = [] {
++        const char * e = std::getenv("FNFL_RF_SPLIT");
++        const int32_t x = e != nullptr ? std::atoi(e) : 0;
++        if (x > 0) {
++            std::fprintf(stderr, "fn::model: EXPERIMENT RidgeFill skip path from layer %d (FNFL_RF_SPLIT)\n", x);
++        }
++        return x;
++    }();
++    return v;
++}
++
+ bool fail(std::string & err, const std::string & what) {
+     err = what;
+     return false;
+@@ -1903,6 +1919,7 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+     const int64_t  pos0     = c.start + r0;
+     const bool     end      = l == m_->win.hi + 1;  // the window's end (TTTS1; the whole model: 48)
+     const bool     gdn      = !end && l % fn::full_attn_interval != fn::full_attn_interval - 1;
++    const bool     rf       = !end && rf_split() > 0 && l >= rf_split(); // EXPERIMENT (rf_split)
+     link &         lp       = links_[lk_p0 + h];
+     // SEL: produced and consumed inside the piece's own sublayer, so two slots alternate (their reuse waits)
+     link &         ls       = links_[h % 2 == 0 ? lk_sel0 : lk_sel1];
+@@ -2132,7 +2149,12 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+                 hr.down_splits = cd.splits;
+                 hr.up_tile     = cu.tile;
+                 hr.up_splits   = cu.splits;
+-                if ((hconv && !fn::hc::hct_convert(ha.w, a.hct, s)) ||
++                if (rf) { // EXPERIMENT: no HC; the folded exchange combined on its own so the slot is freed in order
++                    if (fold && (!fn::xchg::pcombine(n, k, cb.own, cb.peer, cb.gen, cb.inject, cb.streams, a.err, s) ||
++                                 !freed())) {
++                        return err.empty() ? fail(err, "prompt: RF combine") : false;
++                    }
++                } else if ((hconv && !fn::hc::hct_convert(ha.w, a.hct, s)) ||
+                     (hz ? !fn::hc::hct_mix_ladder(ha, cb, hp, hs, hr, a.lws, s) :
+                           !fn::hc::hct_mix(ha, cb, a.hct, hs, s)) ||
+                     (fold && !freed())) {
+@@ -2378,7 +2400,7 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+                 note(&route_counts::gdn);
+                 count(psite::gdn_core);
+                 const fn::dense::pt_seg po[1] = {{nullptr, D, D}};
+-                if (!dprod({ &w.ssm_out }, gdn_out_at, GV, act1(gated16, GV), po, 1, pay)) {
++                if (!rf && !dprod({ &w.ssm_out }, gdn_out_at, GV, act1(gated16, GV), po, 1, pay)) {
+                     return fail(err, "prompt: GDN out");
+                 }
+                 count(psite::gdn_out);
+@@ -2486,7 +2508,7 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+ 
+                 // PB3: the shared gate's BF16 row converted after the router's, then 7 zero rows (scales 0), so one
+                 // tensor product gives the logits and the gate logit (column 512) from the FP16 mixed row
+-                if (!m_->single || k == 0) {
++                if (!rf && (!m_->single || k == 0)) {
+                     float * const rsc = reinterpret_cast<float *>(a.w16 + ffn_router_s_at);
+                     const fn::dense::pt_seg rs[2] = {{logits, NE, NE}, {sgl, 8, NE + 8}};
+                     if ((dconv(prompt_dense_key(static_cast<int32_t>(fn::dense::fmt::bf16), 0, D, NE + 8)) &&
+@@ -2579,12 +2601,12 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+                     note(!dcf.retained() ? &route_counts::exd_grouped : &route_counts::exd_per_task);
+                     note_fmt(&route_counts::ex_fmts, static_cast<int32_t>(gf));
+                 }
+-                if ((own && !fn::experts::ep_group(n, fn::experts::ep_task_rows(gf), ids, rt, a.err + 2, s, lists)) ||
++                if (!rf && ((own && !fn::experts::ep_group(n, fn::experts::ep_task_rows(gf), ids, rt, a.err + 2, s, lists)) ||
+                     (own && skip != nullptr && !fn::experts::es_drop(rt, skip, s)) ||
+                     (ring ? (own && !fn::experts::ep_task_offsets(rt, toff, s)) :
+                             !(gcf.retained() ? fn::experts::ep_gate_up(gf, n, gu, s) :
+                                                fn::experts::ep_gate_up_ladder(gf, gcf.tile, n, gu, ltasks[0],
+-                                                                              rt.counters + 2, s)))) {
++                                                                              rt.counters + 2, s))))) {
+                     return fail(err, "prompt: experts gate/up");
+                 }
+                 // the shared expert: gate and up (DP2's packing), the GLU, its down (EX1's) scaled by sg
+@@ -2592,8 +2614,8 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+                     return fail(err, "prompt: shared expert shapes");
+                 }
+                 const fn::dense::pt_seg gu2[2] = {{sh_g, 320, 320}, {sh_u, 320, 640}};
+-                if (!dprod({ &w.sh_gate, &w.sh_up }, 0, D, mx, gu2, 2) ||
+-                    !fn::dense::pd_glu(n, 320, sh_g, sh_u, 320, sh_glu, 320, s)) {
++                if (!rf && (!dprod({ &w.sh_gate, &w.sh_up }, 0, D, mx, gu2, 2) ||
++                    !fn::dense::pd_glu(n, 320, sh_g, sh_u, 320, sh_glu, 320, s))) {
+                     return fail(err, "prompt: shared expert");
+                 }
+                 {
+@@ -2606,7 +2628,7 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+                     const fn::dense::pt_seg so[1] = {
+                         { shared, D, D }
+                     };
+-                    if (!dprod({ &sd }, ffn_down_at, 320, act1(sh_glu, 320), so, 1, nullptr, D, fn::xchg::err_prange,
++                    if (!rf && !dprod({ &sd }, ffn_down_at, 320, act1(sh_glu, 320), so, 1, nullptr, D, fn::xchg::err_prange,
+                                fn::dense::pd_layout::ex1_down, sg)) {
+                         return fail(err, "prompt: shared down");
+                     }
+@@ -2622,7 +2644,9 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+                 sa.out16 = pay;
+                 sa.err = a.err;
+                 sa.err_bit = fn::xchg::err_prange;
+-                if (ring) {
++                if (rf) {
++                    // EXPERIMENT: no experts
++                } else if (ring) {
+                     rcard[k] = { true, gf, df, gu, dn, sa, toff };
+                 } else {
+                     if (!(dcf.retained() ?
+@@ -2710,7 +2734,7 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+                 aa.max_cells = st.n_cells;
+                 aa.out16     = att16;
+                 aa.err       = a.err;
+-                if (!fn::qsa::qsp_attend(aa, s)) {
++                if (!rf && !fn::qsa::qsp_attend(aa, s)) {
+                     return fail(err, "prompt: QSA attention");
+                 }
+                 note(&route_counts::qsa);
+@@ -2748,12 +2772,12 @@ bool prompt_path::layer_half(const prompt_chunk & c,
+                     if (wcfg.splits > 1) {
+                         note(&route_counts::dense_split);
+                     }
+-                    wo_ok = fn::dense::pl_tc(q, wcfg.tile, wcfg.splits, a.lws, s);
++                    wo_ok = rf || fn::dense::pl_tc(q, wcfg.tile, wcfg.splits, a.lws, s);
+                 } else {
+                     note(&route_counts::dense_retained);
+-                    wo_ok = fn::dense::pd_tc(t, s);
++                    wo_ok = rf || fn::dense::pd_tc(t, s);
+                 }
+-                if (!wo_ok) {
++                if (!wo_ok && !rf) {
+                     return fail(err, "prompt: QSA out");
+                 }
+                 count(psite::qsa_out);
