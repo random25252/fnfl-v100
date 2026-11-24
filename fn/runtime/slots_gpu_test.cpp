@@ -55,6 +55,8 @@
 #include "fn/model/state.h"
 #include "fn/runtime/expert_cache.h"
 #include "fn/runtime/joint.h"
+
+#include <cstdlib>
 #include "fn/runtime/runtime.h"
 #include "fn/runtime/target_cmds.h"
 #include "fn/tools/cases.h"
@@ -984,7 +986,10 @@ bool part_b(const fnfl_target_args & a,
             const std::string &      nodes        = std::string(),
             bool                     x16          = false,
             int32_t                  spec_d       = 4) {
-    const int32_t cells = 65536;
+    // FNFL_TEST_CELLS (a multiple of 16,384): fewer cells a slot, for a model whose weights leave less room (Swift
+    // IQ3_S: four slots at 65,536 do not fit beside its 26.9 GiB a card)
+    const char *  tc    = std::getenv("FNFL_TEST_CELLS");
+    const int32_t cells = tc != nullptr && std::atoi(tc) >= 16384 && std::atoi(tc) % 16384 == 0 ? std::atoi(tc) : 65536;
     auto m = std::make_unique<md::model>();
     fnfl_target_args aa = a;
     aa.n_slots = 4;

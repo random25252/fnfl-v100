@@ -2403,6 +2403,33 @@ __global__ void __launch_bounds__(n_thread_up, 1) hc_sub_joint_kernel(const __gr
         if ((mode & 1) != 0) {
             __syncthreads(); // the down phase's finish reads of the region before the up phase's stores
         }
+        if constexpr (!H) {
+            if ((p.p[0].u.hc_packed & 4) != 0) {
+                // --fnfl-hc-route host: the peer's down phase wrote every lane's moments (the joint layout, rows
+                // 0 .. LR - 1: the v words, then each down block's run of 18 LR words) into this card's host slots.
+                // Every block lands its share of every lane's 8-byte pairs into the lane's device slot, where the up
+                // phase polls them as before, and resets each host pair after landing it. A block lands before its
+                // own up work and waits only on the peer's sends, so the co-resident grid cannot deadlock.
+                constexpr int32_t v_pairs = 2 * LR, run_pairs = 9 * LR;
+                constexpr int32_t n_pairs = v_pairs + fn::xchg::hcj_blocks * run_pairs;
+                const int32_t     t0      = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+                const int32_t     nt      = static_cast<int32_t>(gridDim.x * blockDim.x);
+#pragma unroll
+                for (int32_t k = 0; k < U; ++k) {
+                    for (int32_t t = t0; t < n_pairs; t += nt) {
+                        const int32_t w = t < v_pairs ? 2 * t
+                                                      : fn::xchg::hcj_run_at((t - v_pairs) / run_pairs, 0) +
+                                                            2 * ((t - v_pairs) % run_pairs);
+                        uint2 *       src = reinterpret_cast<uint2 *>(p.p[k].land_src + w);
+                        const uint2   v   = fn::xchg::poll2(src, p.p[k].u.err, fn::xchg::err_poll_hc);
+                        asm volatile("st.global.v2.u32 [%0], {%1, %2};" ::"l"(p.p[k].u.hc_ring + w), "r"(v.x),
+                                     "r"(v.y)
+                                     : "memory");
+                        fn::xchg::reset2(src);
+                    }
+                }
+            }
+        }
         up_wide<U, LR, H>(p);
     }
 }
@@ -3350,8 +3377,20 @@ bool sub_joint_ok(int32_t lanes, int32_t rows, int32_t mode, const sub_args * a,
 template <int U, int LR, bool H, bool Q>
 bool launch_sub_joint_ur(int32_t mode, const sub_args * a, cudaStream_t stream) {
     sub_joint_params q = {};
+    // --fnfl-hc-route host: every lane's host slots set (the layer sets all or none), not the head form, not Q8_0
+    bool host = !H && !Q;
+    for (int32_t k = 0; k < U; ++k) {
+        host = host && a[k].hc_host_peer != nullptr && a[k].hc_host_in != nullptr;
+    }
     for (int32_t k = 0; k < U; ++k) {
         q.p[k] = sub_of(a[k]);
+        q.p[k].u.hc_packed = 0; // the joint form's X-HC is always the joint layout; bit 4 alone marks the host route
+        q.p[k].d.hc_packed = 0;
+        if (host) {
+            q.p[k].d.hc_peer = a[k].hc_host_peer;
+            q.p[k].land_src = a[k].hc_host_in;
+            q.p[k].u.hc_packed = 4;
+        }
         if (H) {
             q.p[k].u.inject = nullptr;
         }

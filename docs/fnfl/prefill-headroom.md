@@ -474,6 +474,30 @@ index-key writes and every exchange's bookkeeping. `ttft_bench.py`, cache-busted
   work yet. To revisit: load the published maps, compare against exact prefill on retrieval tests and real agent
   prompts, refit on Swift if they transfer poorly, then turn the patch into a real path.
 
+### The dense products' ceiling, measured in the real prefill (2026-11-24)
+
+An experimental build (`docs/iq3s-tools/tc/cublas_standin.patch`, env `FNFL_TC_CUBLAS=1`; timing only, outputs and
+error words ignored) replaced every prompt dense product except the router (kept so the routing stays real) with a
+cuBLAS FP16 GEMM of the same rows × n × k on a non-zero dummy weight: the time a CUTLASS-class kernel with in-loader
+decode could take, with the real power draw. `ttft_bench.py`, cache-busted, two reps:
+
+| Prompt | FNFL today | Dense at cuBLAS speed | Gain |
+|---|---|---|---|
+| 32K | 8.32 s | 7.75 s (one outlier rep at 9.09) | ~1.07× |
+| 64K | 16.74 s | 15.71 s | ~1.07× |
+
+With all-zero dummy weights (less tensor-core power) it was ~1.10×; the non-zero run's GPU 0 touched the 250 W cap in
+3 of 102 samples (61 °C average, 68 peak; HBM 68 peak; GPU 1 peak 59 °C; no thermal throttling). So the dense
+products, a quarter of a chunk, are worth ~+7% at cuBLAS's speed, not more.
+
+**The whole ceiling, with the rest bounded** (per 8,192-row chunk, ~2.09 s today):
+- dense at cuBLAS speed: −~140 ms (measured above, power included);
+- HC split across the cards: −~150–250 ms (it is computed twice today; the extra exchange must stay hidden);
+- experts grouped over the whole chunk: −~200 ms (an estimate; FNFL already beats cuBLAS per launch);
+- attention and GDN at flash-attention-class speed: −~120 ms;
+- together ~1.4–1.45 s, **~1.45×** if every piece landed, ~1.3× realistic under GPU 0's cap. Each piece is its own
+  project of one to three weeks, worth ~7–12% alone; the "shared tensor-core core" by itself is the ~7%.
+
 ## The realistic maximum with code changes, and the path (2026-11-24, estimates)
 
 Per 8,192-token chunk (today ~2.08 s, ~3,930 tok/s with all the switches):

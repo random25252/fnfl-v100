@@ -414,7 +414,8 @@ class joint_rings {
     const rings & lane(int32_t u) const { return *lane_[u]; }
     // floats from lane u's ring to lane u + 1's (every slot at the same offset in each)
     static int64_t lane_floats();
-    // card's joint receive slot s (0 .. n_slot - 1) of X-A or X-F: joint_rows rows of words_half words
+    // card's joint receive slot s (0 .. n_slot - 1) of X-A or X-F: joint_rows rows of words_half words; in pinned
+    // host memory when --fnfl-hmix-route host is on (the sender's stores and the receiver's polls work alike there)
     float * slot(int32_t card, msg m, int32_t s) const;
     uint32_t * err(int32_t card) const { return err_[card] == nullptr ? nullptr : err_[card] + max_lanes; }
 
@@ -425,6 +426,7 @@ class joint_rings {
   private:
     int32_t dev_[2] = {-1, -1};
     float * buf_[2] = {nullptr, nullptr};    // max_lanes lane rings, then X-A's and X-F's joint slots
+    float * hbuf_[2] = {nullptr, nullptr};   // --fnfl-hmix-route host: X-A's and X-F's joint slots, pinned host memory
     uint32_t * err_[2] = {nullptr, nullptr}; // max_lanes lane words, then the joint word
     std::unique_ptr<rings> lane_[max_lanes];
     bool ok_ = false;

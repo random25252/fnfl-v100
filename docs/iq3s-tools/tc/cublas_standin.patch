@@ -1,0 +1,140 @@
+diff --git a/fn/CMakeLists.txt b/fn/CMakeLists.txt
+index acbf422..ff390b9 100644
+--- a/fn/CMakeLists.txt
++++ b/fn/CMakeLists.txt
+@@ -371,6 +371,7 @@ fnfl_target_flags(fnfl-kernels-dense)
+ target_compile_options(fnfl-kernels-dense PRIVATE
+     "$<$<COMPILE_LANGUAGE:CUDA>:-lineinfo;--ftz=false;--prec-div=true;--prec-sqrt=true;--fmad=true>")
+ add_dependencies(fnfl-kernels-dense fnfl-check-includes)
++target_link_libraries(fnfl-kernels-dense PUBLIC CUDA::cublas) # EXPERIMENT (FNFL_TC_CUBLAS)
+ 
+ # the token embedding (E1): DP2's IQ3_S decode (dense/iq3s.cuh). Math flags are declared: no fast math (one product a
+ # value, bitwise fn/quant's decode)
+diff --git a/fn/kernels/dense/dense_prompt.cu b/fn/kernels/dense/dense_prompt.cu
+index feb77a8..767d504 100644
+--- a/fn/kernels/dense/dense_prompt.cu
++++ b/fn/kernels/dense/dense_prompt.cu
+@@ -1,3 +1,6 @@
++#include <cublas_v2.h>
++#include <cstdio>
++#include <cstdlib>
+ #include "fn/kernels/dense/dense_dec.cuh"
+ #include "fn/kernels/dense/dense_prompt.h"
+ #include "fn/kernels/dense/dense_ladder.cuh"
+@@ -1198,7 +1201,74 @@ bool dense_grouped() {
+     return cur == 1;
+ }
+ 
++// EXPERIMENT (FNFL_TC_CUBLAS=1, the tensor-core ceiling): every prompt dense product (pd_tc, pq_tc, pl_tc) replaced by
++// a cuBLAS FP16 GEMM of the same rows x n x k on a dummy FP16 weight, into a scratch output: the time a CUTLASS-class
++// kernel with in-loader decode could take. Outputs are not written (garbage downstream): timing only.
++namespace {
++struct cb_dev {
++    cublasHandle_t h = nullptr;
++    uint16_t * w = nullptr;
++    uint16_t * out = nullptr;
++    size_t w_n = 0, out_n = 0;
++};
++bool cb_on() {
++    static const bool on = [] {
++        const char * e = std::getenv("FNFL_TC_CUBLAS");
++        const bool v = e != nullptr && e[0] == '1';
++        if (v) {
++            std::fprintf(stderr, "fn::dense: EXPERIMENT prompt dense products as cuBLAS GEMMs (FNFL_TC_CUBLAS)\n");
++        }
++        return v;
++    }();
++    return on;
++}
++bool cb_gemm(const pt_args & t, void * stream) {
++    static cb_dev d[8];
++    int dev = 0;
++    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 8) {
++        return false;
++    }
++    cb_dev & c = d[dev];
++    if (c.h == nullptr && cublasCreate(&c.h) != CUBLAS_STATUS_SUCCESS) {
++        return false;
++    }
++    const size_t wn = size_t(t.n) * size_t(t.k), on = size_t(t.rows) * size_t(t.n);
++    if (wn > c.w_n) {
++        cudaFree(c.w);
++        if (cudaMalloc(&c.w, wn * 2) != cudaSuccess) {
++            return false;
++        }
++        cudaMemset(c.w, 0x3a, wn * 2); // FP16 0x3a3a (~0.78): non-zero, so the tensor cores draw realistic power
++        c.w_n = wn;
++    }
++    if (on > c.out_n) {
++        cudaFree(c.out);
++        if (cudaMalloc(&c.out, on * 2) != cudaSuccess) {
++            return false;
++        }
++        c.out_n = on;
++    }
++    cublasSetStream(c.h, static_cast<cudaStream_t>(stream));
++    const float one = 1.0f, zero = 0.0f;
++    // row-major C[rows][n] = X[rows][k] W[n][k]^T, as column-major C^T (n x rows) = W^T' X^T'; a K split (two
++    // activation sources) as two accumulating GEMMs
++    const int32_t k0 = t.x.a1 != nullptr && t.x.k_split > 0 ? t.x.k_split : t.k;
++    const auto g = [&](int32_t kk, const uint16_t * w, const uint16_t * x, int64_t ld, const float * beta) {
++        return cublasGemmEx(c.h, CUBLAS_OP_T, CUBLAS_OP_N, t.n, t.rows, kk, &one, w, CUDA_R_16F, t.k, x, CUDA_R_16F,
++                            static_cast<int>(ld > 0 ? ld : kk), beta, c.out, CUDA_R_16F, t.n, CUBLAS_COMPUTE_32F,
++                            CUBLAS_GEMM_DEFAULT_TENSOR_OP) == CUBLAS_STATUS_SUCCESS;
++    };
++    if (!g(k0, c.w, t.x.a0, t.x.ld0, &zero)) {
++        return false;
++    }
++    return k0 == t.k || g(t.k - k0, c.w + k0, t.x.a1, t.x.ld1, &one);
++}
++} // namespace
++
+ bool pd_tc(const pt_args & a, void * stream) {
++    if (cb_on() && a.n != 520) { // the router's product (512 + 8) kept, so the routing stays real
++        return cb_gemm(a, stream);
++    }
+     pt_kargs k = {};
+     if (!pt_make(a, true, stream, k)) {
+         return false;
+@@ -1282,6 +1352,9 @@ bool pq_tc_attributes() {
+ }
+ 
+ bool pq_tc(const pq_args & a, void * stream) {
++    if (cb_on() && a.t.n != 520) { // the router's product (512 + 8) kept, so the routing stays real
++        return cb_gemm(a.t, stream);
++    }
+     pq_kargs k = {};
+     // packed sources: N a multiple of 32 (whole column tiles); BF16 rows: of 8 (columns past N read zero rows and
+     // pd_tc's epilogue writes none)
+@@ -1385,6 +1458,9 @@ bool pl_takes(const pq_args & a) {
+ }
+ 
+ bool pl_tc(const pq_args & a, int32_t t, int32_t splits, const pl_ws & ws, void * stream) {
++    if (cb_on() && a.t.n != 520) { // the router's product (512 + 8) kept, so the routing stays real
++        return cb_gemm(a.t, stream);
++    }
+     pk::pl_kargs k = {};
+     const pk::pl_src src = pl_source_of(a);
+     if (src == pk::pl_src::count || t < 0 || t >= pl_n_tiles || !pt_make(a.t, false, stream, k.e) ||
+diff --git a/fn/model/prompt.cpp b/fn/model/prompt.cpp
+index 3303dca..6b52a82 100644
+--- a/fn/model/prompt.cpp
++++ b/fn/model/prompt.cpp
+@@ -28,6 +28,7 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <mutex>
+ #include <string>
+@@ -3154,7 +3155,8 @@ bool prompt_path::check_errors(std::string & err) {
+             !cuda_ok(cudaStreamSynchronize(static_cast<cudaStream_t>(p_[k]->c.stream)), "error words", err)) {
+             return false;
+         }
+-        if (w[0] != 0u || w[1] != 0u || w[2] != 0u) {
++        static const bool ignore = std::getenv("FNFL_TC_CUBLAS") != nullptr; // EXPERIMENT: timing only, outputs garbage
++        if (!ignore && (w[0] != 0u || w[1] != 0u || w[2] != 0u)) {
+             char b[160];
+             snprintf(b, sizeof(b),
+                      "prompt: card %d error words: prompt 0x%x (bit 0 an FP16 range, 25 a message generation, 26 a "

@@ -1963,6 +1963,12 @@ bool joint_run(const jlanes & ln, int32_t lanes, bool head, int32_t subs, int32_
                 fn::hc::sub_args a[fn::xchg::max_lanes] = {};
                 for (int32_t k = 0; k < lanes; ++k) {
                     a[k] = joint_lane_args(*ln[k], *ln[0]->c[r], r, n, head);
+                    // --fnfl-hc-route host (FNFL_HC_HOST=1): the joint launch lands X-HC from the lanes' host slots
+                    const int32_t sl = n % fn::xchg::n_slot;
+                    if (!head && ln[k]->rg.host_hc(r, sl) != nullptr) {
+                        a[k].hc_host_in = ln[k]->rg.host_hc(r, sl);
+                        a[k].hc_host_peer = ln[k]->rg.host_hc(1 - r, sl);
+                    }
                 }
                 ok = cuda_ok(cudaSetDevice(ln[0]->c[r]->dev), "cudaSetDevice") &&
                      (head ? fn::hc::head_sub_joint(lanes, rows, mode, a, launch_stream(ln[0]->c, r)) :

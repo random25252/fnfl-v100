@@ -2379,10 +2379,20 @@ bool hc_joint(const joint_lanes & j, const layer_weights & w, const layer_input 
         return true;
     }
     fn::hc::sub_args ha[fn::xchg::max_lanes];
+    float * host_in[fn::xchg::max_lanes] = {}; // --fnfl-hmix-route host: each lane's host X-HMIX slot, landed below
+    const int32_t s = hc_slot(u, u.sub);
     for (int32_t k = 0; k < j.lanes; ++k) {
         const card_ctx & c = *j.lane[k];
         const layer_input hi = hc_input(c, in[k], sub);
         ha[k] = hc_sub_args(c, hm, sub, hi.hres, hi.hpost, hi.hx, u);
+        host_in[k] = c.rings->host_hmix(c.card, s);
+        if (host_in[k] != nullptr) {
+            ha[k].hmix_peer = c.rings->host_hmix(1 - c.card, s);
+        }
+        if (c.rings->host_hc(c.card, s) != nullptr) { // --fnfl-hc-route host: hc.cu hc_sub_joint_kernel lands it
+            ha[k].hc_host_in = c.rings->host_hc(c.card, s);
+            ha[k].hc_host_peer = c.rings->host_hc(1 - c.card, s);
+        }
     }
     // TTTS4 item 3: the UD-Q4_K_XL target's Q8_0 sublayer (the mixed down layout) takes the same joint launch on its
     // Q8_0 weights, each lane bitwise its lone down2_q8_mix and up2_q8 at the round's rows
@@ -2393,6 +2403,19 @@ bool hc_joint(const joint_lanes & j, const layer_weights & w, const layer_input 
         return err.empty() ? fail(err, q8 ? "hc sub_joint_q8" : "hc sub_joint") : false;
     }
     note(*j.lane[0], q8 ? "hc.sub_joint.q8" : "hc.sub_joint");
+    if ((mode & 2) != 0) { // the up phase wrote the peer halves: land each lane's (xchg.h land_hmix)
+        for (int32_t k = 0; k < j.lanes; ++k) {
+            const card_ctx & c = *j.lane[k];
+            if (host_in[k] != nullptr &&
+                !fn::xchg::land_hmix(j.rows, 1 - c.card, host_in[k], c.rings->slot(c.card, fn::xchg::msg::hmix, s),
+                                     c.rings->err(c.card), j.lane[0]->stream)) {
+                return fail(err, "land hmix (lanes)");
+            }
+        }
+        if (host_in[0] != nullptr) {
+            note(*j.lane[0], "xchg.land_hmix.lanes");
+        }
+    }
     return true;
 }
 

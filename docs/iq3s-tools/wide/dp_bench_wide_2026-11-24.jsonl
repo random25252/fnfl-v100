@@ -1,0 +1,264 @@
+# dp-bench: Tesla PG500-216, sm_70, 72 SMs, driver API 13000, runtime 12090, mode wide, start 2026-11-24T08:41:21.909Z
+# dp-bench: busy for 2.00 s (30144 memsets of 64 MiB), timing from 2026-11-24T08:41:23.910Z
+{"wide": "header", "cols": "group, weight_bytes, lanes, rows, total_rows, f16, warm_us, cold_us"}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 17.95, "cold_us": 23.45}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 23.18, "cold_us": 28.62}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 25.54, "cold_us": 31.46}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 35.35, "cold_us": 42.39}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 41.12, "cold_us": 49.31}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 47.18, "cold_us": 57.27}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 51.03, "cold_us": 61.83}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 66.54, "cold_us": 76.83}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 47.95, "cold_us": 58.09}
+{"wide": "GDN input L0", "weight_bytes": 10588160, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 49.38, "cold_us": 59.96}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 23.07, "cold_us": 28.26}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 25.76, "cold_us": 32.41}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 26.86, "cold_us": 34.59}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 38.36, "cold_us": 46.67}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 45.46, "cold_us": 54.99}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 52.24, "cold_us": 62.08}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 60.58, "cold_us": 69.40}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 77.86, "cold_us": 88.14}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 41.26, "cold_us": 50.25}
+{"wide": "GDN input L10", "weight_bytes": 17448960, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 44.02, "cold_us": 54.42}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 16.91, "cold_us": 21.20}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 19.34, "cold_us": 24.52}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 21.57, "cold_us": 27.57}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 31.14, "cold_us": 38.22}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 36.83, "cold_us": 43.78}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 37.86, "cold_us": 47.34}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 42.89, "cold_us": 52.51}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 56.85, "cold_us": 66.46}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 38.35, "cold_us": 47.67}
+{"wide": "GDN input L14", "weight_bytes": 12042240, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 41.25, "cold_us": 50.38}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 19.79, "cold_us": 24.63}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 21.86, "cold_us": 28.01}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 23.01, "cold_us": 28.67}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 32.89, "cold_us": 40.45}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 38.59, "cold_us": 47.16}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 39.68, "cold_us": 48.38}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 44.35, "cold_us": 54.94}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 60.71, "cold_us": 69.35}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 41.34, "cold_us": 49.23}
+{"wide": "GDN input L46", "weight_bytes": 14663680, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 43.50, "cold_us": 52.20}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 18.19, "cold_us": 24.04}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 21.09, "cold_us": 33.13}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 22.88, "cold_us": 35.61}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 36.46, "cold_us": 46.69}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 44.09, "cold_us": 54.78}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 53.52, "cold_us": 68.92}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 63.19, "cold_us": 79.59}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 89.10, "cold_us": 99.76}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 50.60, "cold_us": 67.20}
+{"wide": "QSA input L11", "weight_bytes": 12861440, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 60.68, "cold_us": 78.28}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 23.12, "cold_us": 28.52}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 25.90, "cold_us": 36.35}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 27.50, "cold_us": 39.76}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 40.11, "cold_us": 50.07}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 48.63, "cold_us": 59.39}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 62.14, "cold_us": 72.70}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 71.52, "cold_us": 85.30}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 99.65, "cold_us": 108.62}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 54.00, "cold_us": 71.07}
+{"wide": "QSA input L27", "weight_bytes": 17254400, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 63.70, "cold_us": 82.07}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 19.36, "cold_us": 25.24}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 23.29, "cold_us": 33.82}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 26.37, "cold_us": 37.28}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 38.62, "cold_us": 48.79}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 46.11, "cold_us": 56.58}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 57.29, "cold_us": 70.99}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 67.70, "cold_us": 82.38}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 92.91, "cold_us": 103.35}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 54.32, "cold_us": 68.43}
+{"wide": "QSA input L47", "weight_bytes": 10854400, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 65.00, "cold_us": 81.41}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 26.36, "cold_us": 30.95}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 28.26, "cold_us": 39.04}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 29.22, "cold_us": 41.44}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 38.12, "cold_us": 51.53}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 44.86, "cold_us": 59.01}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 57.47, "cold_us": 72.81}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 63.70, "cold_us": 83.05}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 90.16, "cold_us": 101.97}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 54.02, "cold_us": 71.83}
+{"wide": "QSA input L48", "weight_bytes": 21381120, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 62.90, "cold_us": 82.76}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 11.66, "cold_us": 18.43}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 13.89, "cold_us": 22.86}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 14.88, "cold_us": 24.75}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 21.33, "cold_us": 34.23}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 24.82, "cold_us": 39.96}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 29.35, "cold_us": 46.77}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 33.02, "cold_us": 52.43}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 41.58, "cold_us": 64.64}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 25.02, "cold_us": 39.76}
+{"wide": "ssm_out L25", "weight_bytes": 6451200, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 27.31, "cold_us": 43.37}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 11.26, "cold_us": 16.95}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 13.59, "cold_us": 20.00}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 14.37, "cold_us": 21.66}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 19.44, "cold_us": 29.23}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 22.11, "cold_us": 34.15}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 24.66, "cold_us": 39.70}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 27.44, "cold_us": 43.96}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 35.57, "cold_us": 54.71}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 25.10, "cold_us": 37.22}
+{"wide": "ssm_out L10", "weight_bytes": 5406720, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 27.10, "cold_us": 42.73}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 10.90, "cold_us": 18.15}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 13.23, "cold_us": 21.09}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 14.34, "cold_us": 23.93}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 19.79, "cold_us": 31.64}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 22.22, "cold_us": 35.71}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 25.41, "cold_us": 41.42}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 27.83, "cold_us": 45.47}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 33.23, "cold_us": 54.30}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 26.18, "cold_us": 41.55}
+{"wide": "ssm_out L1", "weight_bytes": 3379200, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 28.18, "cold_us": 45.44}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 10.38, "cold_us": 16.61}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 12.94, "cold_us": 19.89}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 13.46, "cold_us": 21.56}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 18.70, "cold_us": 28.52}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 21.10, "cold_us": 33.61}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 24.13, "cold_us": 39.81}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 26.38, "cold_us": 43.52}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 32.12, "cold_us": 52.02}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 25.09, "cold_us": 39.39}
+{"wide": "ssm_out L0", "weight_bytes": 4177920, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 26.99, "cold_us": 43.65}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 9.47, "cold_us": 15.59}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 11.85, "cold_us": 18.33}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 13.33, "cold_us": 20.74}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 18.62, "cold_us": 28.26}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 21.26, "cold_us": 32.97}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 23.17, "cold_us": 38.30}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 25.84, "cold_us": 43.01}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 33.18, "cold_us": 52.20}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 23.68, "cold_us": 37.94}
+{"wide": "ssm_out L2", "weight_bytes": 4423680, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 25.70, "cold_us": 41.60}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 11.68, "cold_us": 18.41}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 13.90, "cold_us": 22.99}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 14.89, "cold_us": 24.78}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 21.34, "cold_us": 34.20}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 24.82, "cold_us": 39.71}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 29.38, "cold_us": 47.05}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 33.02, "cold_us": 52.38}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 41.65, "cold_us": 64.87}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 25.03, "cold_us": 39.76}
+{"wide": "attn_output L11", "weight_bytes": 6451200, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 27.34, "cold_us": 43.57}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 11.26, "cold_us": 16.82}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 13.57, "cold_us": 19.76}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 14.39, "cold_us": 21.87}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 19.46, "cold_us": 29.18}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 22.11, "cold_us": 34.28}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 24.75, "cold_us": 39.50}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 27.49, "cold_us": 43.85}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 35.56, "cold_us": 54.43}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 25.07, "cold_us": 37.58}
+{"wide": "attn_output L7", "weight_bytes": 5406720, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 27.12, "cold_us": 42.44}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 13.25, "cold_us": 18.10}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 15.02, "cold_us": 20.94}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 15.82, "cold_us": 23.71}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 19.74, "cold_us": 29.03}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 21.59, "cold_us": 34.45}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 24.69, "cold_us": 39.73}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 27.91, "cold_us": 43.62}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 34.00, "cold_us": 51.20}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 24.99, "cold_us": 39.32}
+{"wide": "attn_output L48", "weight_bytes": 8355840, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 27.18, "cold_us": 43.65}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 8.83, "cold_us": 16.97}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 15.05, "cold_us": 24.22}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 17.46, "cold_us": 26.27}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 39.63, "cold_us": 38.50}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 51.02, "cold_us": 46.11}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 46.33, "cold_us": 52.92}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 59.64, "cold_us": 61.36}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 54.90, "cold_us": 74.85}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 43.21, "cold_us": 51.71}
+{"wide": "shexp gate/up L0", "weight_bytes": 787200, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 57.14, "cold_us": 62.00}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 7.86, "cold_us": 15.31}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 14.48, "cold_us": 20.99}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 16.77, "cold_us": 23.96}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 39.19, "cold_us": 37.20}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 50.00, "cold_us": 42.19}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 45.51, "cold_us": 48.82}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 59.50, "cold_us": 58.93}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 54.58, "cold_us": 69.58}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 41.59, "cold_us": 48.13}
+{"wide": "shexp gate/up L11", "weight_bytes": 921600, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 53.16, "cold_us": 57.04}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 8.58, "cold_us": 15.59}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 14.58, "cold_us": 20.84}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 16.69, "cold_us": 23.91}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 42.64, "cold_us": 36.28}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 52.02, "cold_us": 40.55}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 47.44, "cold_us": 48.05}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 62.09, "cold_us": 57.70}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 54.80, "cold_us": 67.64}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 44.16, "cold_us": 46.87}
+{"wide": "shexp gate/up L48", "weight_bytes": 1740800, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 62.67, "cold_us": 56.52}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 4.96, "cold_us": 12.24}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 5.98, "cold_us": 14.21}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 6.22, "cold_us": 15.69}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 8.27, "cold_us": 19.69}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 9.06, "cold_us": 22.32}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 10.83, "cold_us": 29.26}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 11.84, "cold_us": 31.13}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 13.73, "cold_us": 37.17}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 10.83, "cold_us": 29.08}
+{"wide": "shexp down L0", "weight_bytes": 460800, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 11.84, "cold_us": 31.54}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 4.34, "cold_us": 10.06}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 5.57, "cold_us": 12.85}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 5.66, "cold_us": 14.26}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 7.92, "cold_us": 18.92}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 8.70, "cold_us": 22.17}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 10.35, "cold_us": 27.91}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 11.26, "cold_us": 29.24}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 13.14, "cold_us": 35.94}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 10.32, "cold_us": 28.16}
+{"wide": "shexp down L3", "weight_bytes": 230400, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 11.28, "cold_us": 28.90}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 4.78, "cold_us": 9.45}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 5.54, "cold_us": 12.06}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 5.84, "cold_us": 13.21}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 7.81, "cold_us": 17.54}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 8.58, "cold_us": 20.74}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 10.53, "cold_us": 28.16}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 11.55, "cold_us": 28.98}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 13.47, "cold_us": 35.66}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 10.53, "cold_us": 27.57}
+{"wide": "shexp down L48", "weight_bytes": 870400, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 11.47, "cold_us": 28.54}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 11.09, "cold_us": 17.82}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 13.22, "cold_us": 20.81}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 14.40, "cold_us": 23.65}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 25.54, "cold_us": 33.79}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 25.33, "cold_us": 35.10}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 35.75, "cold_us": 47.77}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 41.38, "cold_us": 54.99}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 37.63, "cold_us": 51.61}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 34.82, "cold_us": 46.98}
+{"wide": "router + shared gate", "weight_bytes": 2626560, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 41.46, "cold_us": 54.58}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 220.95, "cold_us": 220.98}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 243.10, "cold_us": 233.98}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 268.51, "cold_us": 259.15}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 377.79, "cold_us": 373.53}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 446.61, "cold_us": 449.56}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 487.33, "cold_us": 489.80}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 537.11, "cold_us": 543.72}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 725.95, "cold_us": 732.03}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 489.66, "cold_us": 477.70}
+{"wide": "vocabulary", "weight_bytes": 218521600, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 511.78, "cold_us": 502.58}
+{"wide": "eh_proj L48", "weight_bytes": 6963200, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 11.98, "cold_us": 16.56}
+{"wide": "eh_proj L48", "weight_bytes": 6963200, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 14.06, "cold_us": 21.02}
+{"wide": "eh_proj L48", "lanes": 1, "rows": 5, "f16": false, "skipped": true}
+{"wide": "eh_proj L48", "weight_bytes": 6963200, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 18.53, "cold_us": 29.44}
+{"wide": "eh_proj L48", "lanes": 2, "rows": 5, "f16": false, "skipped": true}
+{"wide": "eh_proj L48", "weight_bytes": 6963200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 22.40, "cold_us": 38.76}
+{"wide": "eh_proj L48", "lanes": 4, "rows": 4, "f16": false, "skipped": true}
+{"wide": "eh_proj L48", "lanes": 4, "rows": 5, "f16": false, "skipped": true}
+{"wide": "eh_proj L48", "weight_bytes": 6963200, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 22.51, "cold_us": 38.30}
+{"wide": "eh_proj L48", "lanes": 4, "rows": 4, "f16": true, "skipped": true}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 1, "rows": 1, "total_rows": 1, "f16": false, "warm_us": 61.22, "cold_us": 66.46}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 1, "rows": 4, "total_rows": 4, "f16": false, "warm_us": 66.11, "cold_us": 74.27}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 1, "rows": 5, "total_rows": 5, "f16": false, "warm_us": 74.18, "cold_us": 80.51}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 2, "rows": 4, "total_rows": 8, "f16": false, "warm_us": 104.72, "cold_us": 115.40}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 2, "rows": 5, "total_rows": 10, "f16": false, "warm_us": 123.94, "cold_us": 135.68}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 3, "rows": 4, "total_rows": 12, "f16": false, "warm_us": 133.90, "cold_us": 145.71}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 4, "rows": 4, "total_rows": 16, "f16": false, "warm_us": 146.30, "cold_us": 160.15}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 4, "rows": 5, "total_rows": 20, "f16": false, "warm_us": 198.34, "cold_us": 209.10}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 3, "rows": 4, "total_rows": 12, "f16": true, "warm_us": 134.64, "cold_us": 145.77}
+{"wide": "draft vocabulary", "weight_bytes": 57671680, "lanes": 4, "rows": 4, "total_rows": 16, "f16": true, "warm_us": 142.12, "cold_us": 155.14}
+# dp-bench: done, end 2026-11-24T08:47:50.528Z

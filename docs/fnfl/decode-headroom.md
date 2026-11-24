@@ -364,7 +364,8 @@ the cross-card waits: no single lever of more than a few percent was found.
   against ~140–160 on two). The cards can't move on this box.
 
 **Software left, all measured or bounded above:** overlapped speculation (~+5–8%), B (~+3–8%), per-launch shaving
-(~+3–5%), each weeks of work; wider verify windows with lookup or suffix drafts (+20–40% on edits only). Together
+(~+3–5%), each weeks of work; wider verify windows with lookup or suffix drafts (+20–30% on edits on today's kernel forms, ~+50% with
+tensor-core decode products; see "Wide verify windows" below). Together
 perhaps +10–20% on general text, not a step change.
 
 **Confidence-gated drafting measured offline: no gain on general text (2026-11-24).** An experiment build logged, for
@@ -408,6 +409,141 @@ Volta port on 4× V100 ~100 and ~3,000; a dual-GPU runtime on two Ampere CMP 170
 found is [Basalt](https://helix.ml/blog/basalt-qwen38-flash-next-rtx-pro-6000) on two RTX PRO 6000 Blackwell: 229
 tok/s, ~5,000 tok/s prompt (IQ3_S, a 7-token built-in drafter). The one new large prefill lead, RidgeFill, is lossy and
 is in [`prefill-headroom.md`](prefill-headroom.md).
+
+## Two requests at once (`-np 2`), measured (2026-11-24)
+
+The question: small 4-row steps leave the cards mostly waiting, so would two conversations decoding together (one
+joint 8-row step) give more total output? **Today, no: the joint path is slower in total than one user alone.**
+
+Swift, production flags, `-np 2 -c 65536`, greedy, 400-token answers to five short prompts per client:
+
+| Setting | Clients | Total tok/s | Each request | Step (server log) |
+|---|---|---|---|---|
+| `-np 2`, production flags | 1 | 174 | 173 | ~15 ms (the single-user path) |
+| `-np 2`, production flags | 2 | **154** | 76 | **36.5 ms** (joint) |
+| `-np 2`, no exchange-route switches | 2 | 148 | 76 | 37.7 ms |
+| `-np 2`, no exchange-route switches | 1 | 153 | 151 | 17.7 ms |
+
+- **The joint step is 2.4x the single step for 2x the rows.** Extra verify rows cost ~1.5 ms each on the single path,
+  so a joint step built as well as the single path would take ~21–23 ms (two draft chains and two attention contexts
+  included): ~250 tok/s in total, ~125 a request. Estimate, not measured: the single path stops at 5 rows
+  (`--fnfl-spec-d` 1..4), so 8 rows can't be timed on it.
+- **The exchange switches barely touch it** (36.5 against 37.7 ms). `--fnfl-hc-route host` and the X-HMIX host route
+  were built into the single-user kernels; the joint path (`hc_sub_joint_kernel`, `joint_kernel`,
+  `recv_add_lanes_kernel`, `router_tc_kernel`) has its own exchanges.
+- **Nsight Systems, a joint step a card** (node-level graph trace, ~693 joint steps):
+
+  | Kernel family | ms a step | Per call | Single-user per call |
+  |---|---|---|---|
+  | `hc_sub_joint_kernel` | ~11.1 | 116 µs | 43 µs (`hc_sub`) |
+  | dense `joint_kernel` | ~6.9 | 70 µs | 25 µs (`product_kernel`) |
+  | experts (gate/up, down, lanes) | ~6.0 | 37–83 µs | |
+  | `recv_add_lanes_kernel` | ~4.3 | 45 µs | 2–8 µs |
+  | `router_tc_kernel` | ~3.9 | 80 µs | |
+  | GDN, QSA, the rest | ~6 | | |
+
+- **Wait counters** (`build-wait`, no route switches): X-HC waits 16–24 µs when it waits (single path: 11–13 µs);
+  X-HMIX is polled ~0.4 M times a step and waits ~30 µs on GPU 0; GPU 1 waits ~51 µs on X-A and X-F 86% of the time
+  (it is mostly waiting for GPU 0). Both cards draw only ~105–125 W: the joint step is waiting, not working.
+- **Telemetry, every run:** GPU 0 averaged 47–49 °C (peak 53, HBM peak 55), 122–127 W (peak 147); GPU 1 42–44 °C (peak
+  46, HBM peak 44), 101–107 W. No power-cap or thermal throttling.
+
+**Done the same day (wide-verify step 1): the joint path on the host routes.** With `--fnfl-hmix-route host` and
+`--fnfl-hc-route host` the joint round now takes them too: each lane's X-HMIX goes through its lane ring's host slot and
+is landed after the joint HC launch (`land_hmix` a lane); `hc_sub_joint_kernel` sends X-HC to the peer's host slots and
+every block lands its share of every lane's moments before its up work; and the joint X-A and X-F slots live in pinned
+host memory (with the X-HMIX host route). Two clients, same prompts:
+
+| Build | Total tok/s | Joint step |
+|---|---|---|
+| before | 154 | 36.5 ms |
+| + X-HMIX host route in the joint HC | 176 | 30.1 ms |
+| + X-HC host route in the joint HC kernel | 210 | ~25 ms |
+| + joint X-A/X-F in host memory | **229** | **~22.6 ms** |
+
+- One client stays at 192–194 tok/s (the single-user path, untouched).
+- **Bitwise:** `hcj-test` passes with `FNFL_HC_HOST=1 FNFL_HMIX_HOST=1` (each lane bitwise its lone launches, every R and
+  U); `xchg-test` and `hc2-test` pass on both routes. End to end, with the joint router on its bitwise form
+  (`FNFL_JOINT_ROUTER_TC=0`, a new test switch), the 20 outputs of two clients are identical on the host and peer
+  routes. With the default tensor-core router (FMS5, not bitwise) 4 of 20 differed from the old build: which rounds
+  run jointly depends on timing, and the old build's timing repeats exactly (two baseline runs 20 of 20 identical).
+- What is left a joint step (Nsight Systems, before the X-A/X-F change): `hc_sub_joint_kernel` 60 µs a call (5.7 ms
+  a step), the joint dense 41 µs (4.1 ms), the receive-and-add 30 µs (2.9 ms; then moved to host memory), the
+  per-lane landings ~1.1 ms (two launches a sublayer; one fused launch would save ~0.5 ms).
+- `state-test mu1 joint` does not fit beside Swift's weights even at 16,384 cells (`FNFL_TEST_CELLS`, a new test
+  override): its four slots' graphs run the cards out of memory.
+- **Telemetry** (all runs): GPU 0 up to 55 °C core and 59 °C HBM, 135–146 W average; GPU 1 up to 48 °C and 45 °C; no
+  power-cap or thermal throttling.
+
+**What it would have taken (before):** give the joint kernels the single path's exchange work: the host route for X-HC with idle
+blocks landing it, the X-HMIX host route, and the receive-and-add folded into its consumers. Several days, and it only
+pays when two requests really run at once (parallel agents or subagents). A lone request keeps its full speed with
+`-np 2` (it runs on the single-user path).
+
+## Wide verify windows for edit turns, quantified (2026-11-24)
+
+**The question:** agent edits already accept ~3.87 of 4 lookup proposals on ~95% of their steps (`--fnfl-lookup 6`,
+4.5–4.9 tokens a step), so the 5-row verify window is the cap. What would 8–48 lookup proposals give, and what would the
+wider step cost? **Answer: +50–85% on edit turns at 16 proposals (lossless), nothing on general text.**
+
+**What a row costs on wide kernels.** Short appends to a cached 2,000-token context, timed by the server
+(`docs/iq3s-tools/wide/append_rows.py`, three reps, median), go through the prompt path's tensor-core kernels:
+
+| New tokens | 1 | 4 | 8 | 16 | 32 | 64 | 128 |
+|---|---|---|---|---|---|---|---|
+| ms (`--fnfl-prompt-graphs off`) | 72.9 | 73.9 | 74.7 | 79.3 | 88.9 | 103.0 | 145.5 |
+
+- The fixed ~67 ms is GPU time (Nsight Systems: kernels busy 67 ms of a 75 ms one-token append, ~1,900 launches): the
+  prompt path converts weights to FP16 every call (`pd_convert` 11 ms, `hct_convert` 5 ms) and its small-n product
+  `pt_small_kernel` takes 19 ms. It is not a verify path; prompt graphs on (`--fnfl-graph-copy-skip on`) change nothing.
+- **The slope is what matters:** ~0.45 ms a row from 1 to 16 rows, ~0.6 from 16 to 32, with real token routing (the
+  extra experts each row touches included), against ~0.85–1.9 ms a row on today's 5-row verify kernels.
+
+**What the wider window would accept.** Six agent-style edits (`edit_bench.py`'s four plus two) and three general
+prompts, greedy, outputs collected from the production server (`wide/collect_outputs.py`: 290–318 tok/s on the edits,
+180–238 general), then replayed offline (`wide/window_sim.py`). Lookup as in the engine (the most recent earlier match of
+the last 6..3 tokens, at least 4 tokens following); the other steps take the MTP head's ~2.8 tokens at 14.6 ms. A lookup
+step of W proposals costs 13.45 ms + the slope per row past 4, without the draft step. At W = 4 the model gives
+313 tok/s on the edits against 290–318 measured.
+
+| Proposals a lookup step | 4 (today) | 8 | 12 | 16 | 24 | 32 (adaptive) |
+|---|---|---|---|---|---|---|
+| Tokens a step, edits | 4.4 | 6.7 | 8.7 | 10.3 | 12.7 | 13.0 |
+| Edits tok/s, slope 0.45 / 0.6 ms a row | 313 | 436 | 520 | 572 | 611 | 622 |
+| Edits tok/s, slope 0.9 ms a row (pessimistic) | 305 | 391 | 441 | 468 | 489 | 505 |
+| General tok/s (adaptive window) | 180 | 179 | 179 | 179 | 179 | 179 |
+
+- "Adaptive" proposes up to twice the last lookup step's accepted run (at least 4), so a wide window costs nothing
+  where matches are short; fixed wide windows lose on general text (147–172 at 16–48).
+- **Telemetry:** GPU 0 up to 60 °C core and 62 °C HBM, 153–181 W average (peak 226); GPU 1 up to 53 °C and 48 °C, 130–153
+  W. No power-cap or thermal throttling.
+
+**Today's product kernels don't scale to wide rows (measured the same day).** `dp-bench 0 wide`
+(`docs/iq3s-tools/wide/dp_bench_wide.patch`, results in `dp_bench_wide_2026-11-24.jsonl`) times each dense grouping
+of a layer cold, lone at 1, 4 and 5 rows against the joint launch (FMU2), which reads every weight once for U lanes of R
+rows with each row's arithmetic the lone launch's. Summed over 22 groupings, relative to 4 rows:
+
+| Rows | 1 | 4 | 5 | 8 | 10 | 12 | 16 | 20 | 12 (FP16 form) | 16 (FP16 form) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Time | 0.81 | 1.00 | 1.10 | 1.48 | 1.71 | 2.04 | 2.30 | 2.80 | 1.96 | 2.20 |
+
+- Past 5 rows the integer (`IDP4A`) products stop being bound by the weight read: 16 rows take 2.3× the 4-row time
+  (the output head: 234 → 544 µs). Each row's dot products reload its staged activations, so the shared-memory loads
+  grow with the rows. The joint launch's FP16 form is no better.
+- For the dense family alone (4.19 ms a step at 4 rows) that is ~0.45 ms a row. With experts, HC and the head on
+  today's forms, a row would cost ~1.2–1.5 ms, not the prompt kernels' ~0.45.
+- **Staged gains, edits** (the same replay): at 1.2–1.5 ms a row, 16 proposals give 376–417 tok/s (+28–40%); at 0.45,
+  575 (+84%). So widening on today's kernel forms is worth ~+20–30% (the per-family build-up in
+  [`wide-verify.md`](wide-verify.md) puts a row at ~1.45 ms: +18% at 8 proposals, +28% at 16), and tensor-core decode products (weights
+  unpacked to FP16 in registers, one MMA per weight for every row; batch-invariant when every row count uses them, but
+  not bitwise today's numbers) would take it toward +60–100%.
+- **Telemetry** (the bench, GPU 0 only): up to 56 °C core and 64 °C HBM; 10 of 763 samples at the 250 W cap, during the
+  cold launches' L2 flushes; no thermal throttling.
+
+**What it takes:** `max_rows` = 5 is baked into the verify path (dense, experts, HC, exchange layouts, GDN, attention,
+embed, head, draft catch-up: ~40 files). The kernels need wider row tiles (tensor-core MMA past ~8 rows) that still read
+quantized weights once, and the exchanges sized for 17 rows on the host route. Weeks, in stages: rows up to 17 on today's kernel forms
+(+20–30% on edits), then tensor-core products (toward ~+50%). Build plan: [`wide-verify.md`](wide-verify.md). The engine's correctness rules carry over (greedy bitwise; at T > 0 the one-entry `q_list`).
 
 ## Ideas for later, ranked by expected payoff
 

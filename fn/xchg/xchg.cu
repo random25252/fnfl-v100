@@ -123,22 +123,38 @@ rings::rings(int32_t dev0, int32_t dev1, float * const buf[2], uint32_t * const 
         buf_[c] = buf[c];
         err_[c] = err[c];
     }
-    ok_ = buf_[0] != nullptr && buf_[1] != nullptr && err_[0] != nullptr && err_[1] != nullptr;
+    bool ok = buf_[0] != nullptr && buf_[1] != nullptr && err_[0] != nullptr && err_[1] != nullptr;
+    // the host routes' slots are the view's own (pinned host memory, freed by the view): a joint round's lanes take
+    // --fnfl-hmix-route host and --fnfl-hc-route host like the lone ring (fn/model/layer.cpp hc_joint)
+    for (int32_t c = 0; c < 2 && ok && dev_[0] != dev_[1]; ++c) {
+        device_scope ds(dev_[c]);
+        if (hmix_host_enabled()) {
+            ok = ds.ok && cuda_ok(cudaHostAlloc(&hbuf_[c], size_t(n_slot) * slot_bytes(msg::hmix),
+                                                cudaHostAllocPortable | cudaHostAllocMapped),
+                                  "cudaHostAlloc hmix (view)");
+        }
+        if (ok && hc_host_enabled()) {
+            ok = ds.ok && cuda_ok(cudaHostAlloc(&hcbuf_[c], size_t(n_slot) * hc_own_at * sizeof(float),
+                                                cudaHostAllocPortable | cudaHostAllocMapped),
+                                  "cudaHostAlloc hc (view)");
+        }
+    }
+    ok_ = ok;
 }
 
 rings::~rings() {
-    for (int32_t c = 0; c < 2 && owns_; ++c) {
-        if (buf_[c] == nullptr && err_[c] == nullptr) {
+    for (int32_t c = 0; c < 2; ++c) {
+        if (buf_[c] == nullptr && err_[c] == nullptr && hbuf_[c] == nullptr && hcbuf_[c] == nullptr) {
             continue;
         }
         device_scope ds(dev_[c]);
-        if (buf_[c] != nullptr) {
+        if (owns_ && buf_[c] != nullptr) {
             cudaFree(buf_[c]);
         }
-        if (err_[c] != nullptr) {
+        if (owns_ && err_[c] != nullptr) {
             cudaFree(err_[c]);
         }
-        if (hbuf_[c] != nullptr) {
+        if (hbuf_[c] != nullptr) { // a view's host slots are its own
             cudaFreeHost(hbuf_[c]);
         }
         if (hcbuf_[c] != nullptr) {
@@ -235,6 +251,13 @@ joint_rings::joint_rings(int32_t dev0, int32_t dev1) {
         device_scope ds(dev_[c]);
         ok = ds.ok && cuda_ok(cudaMalloc(&buf_[c], size_t(joint_card_words) * sizeof(float)), "cudaMalloc joint") &&
              cuda_ok(cudaMalloc(&err_[c], size_t(joint_err_words) * sizeof(uint32_t)), "cudaMalloc joint err");
+        // --fnfl-hmix-route host: the joint X-A and X-F slots in pinned host memory too (slot() hands them out), so
+        // the lanes' destination halves (2 .. 20 rows) stay off the collapsing peer link
+        if (ok && dev_[0] != dev_[1] && hmix_host_enabled()) {
+            ok = cuda_ok(cudaHostAlloc(&hbuf_[c], size_t(2 * n_slot * joint_slot_words) * sizeof(float),
+                                       cudaHostAllocPortable | cudaHostAllocMapped),
+                         "cudaHostAlloc joint X-A/X-F");
+        }
     }
     for (int32_t u = 0; u < max_lanes && ok; ++u) {
         float * const b[2] = {buf_[0] + u * card_words, buf_[1] + u * card_words};
@@ -260,6 +283,9 @@ joint_rings::~joint_rings() {
         if (err_[c] != nullptr) {
             cudaFree(err_[c]);
         }
+        if (hbuf_[c] != nullptr) {
+            cudaFreeHost(hbuf_[c]);
+        }
     }
 }
 
@@ -267,7 +293,8 @@ float * joint_rings::slot(int32_t card, msg m, int32_t s) const {
     if (card < 0 || card > 1 || (m != msg::a && m != msg::f) || s < 0 || s >= n_slot || buf_[card] == nullptr) {
         return nullptr;
     }
-    return buf_[card] + max_lanes * card_words + ((m == msg::f ? n_slot : 0) + s) * joint_slot_words;
+    const int64_t at = ((m == msg::f ? n_slot : 0) + s) * joint_slot_words;
+    return hbuf_[card] != nullptr ? hbuf_[card] + at : buf_[card] + max_lanes * card_words + at;
 }
 
 bool joint_rings::reset_all() const {
@@ -279,6 +306,9 @@ bool joint_rings::reset_all() const {
                      "joint prefill") ||
             !cuda_ok(cudaMemset(err_[c], 0, size_t(joint_err_words) * sizeof(uint32_t)), "joint err clear")) {
             return false;
+        }
+        if (hbuf_[c] != nullptr) {
+            std::memset(hbuf_[c], 0xff, size_t(2 * n_slot * joint_slot_words) * sizeof(float));
         }
     }
     for (int32_t u = 0; u < max_lanes; ++u) {

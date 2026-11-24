@@ -1,0 +1,185 @@
+diff --git a/fn/kernels/dense/dense_bench.cpp b/fn/kernels/dense/dense_bench.cpp
+index 76fc995..37af31f 100644
+--- a/fn/kernels/dense/dense_bench.cpp
++++ b/fn/kernels/dense/dense_bench.cpp
+@@ -38,6 +38,7 @@ constexpr double dram_gbps = 1021.6;       // HX12
+ constexpr double tail_single_us = 0.31;    // HX12: a single-pass launch's tail
+ constexpr double tail_across_us = 0.83;    // HX12: a launch that finishes across blocks
+ constexpr int32_t D = 2560;
++constexpr int32_t bench_rows = max_joint_rows; // wide mode: the joint launch's rows (buffers sized for them)
+ 
+ bool cuda_ok(cudaError_t e, const char * what) {
+     return fn::test::cuda_ok(e, "dp-bench", what);
+@@ -203,19 +204,19 @@ struct bench {
+     cudaStream_t st = nullptr;
+     std::map<int64_t, synth> sets;
+     dev_mem grids{grid_bytes};
+-    dev_mem xf{size_t(max_rows) * max_k * 4}; // layer input, F32
+-    dev_mem xc{size_t(max_rows) * max_k};     // and in FNFL's decode format
+-    dev_mem xs{size_t(max_rows) * (max_k / 32) * 8};
+-    dev_mem xc2{size_t(max_rows) * max_k}; // the stand-ins' outputs
+-    dev_mem xs2{size_t(max_rows) * (max_k / 32) * 8};
+-    dev_mem scale{size_t(max_rows) * 4}; // the shared down's scale in "all"
++    dev_mem xf{size_t(bench_rows) * max_k * 4}; // layer input, F32
++    dev_mem xc{size_t(bench_rows) * max_k};     // and in FNFL's decode format
++    dev_mem xs{size_t(bench_rows) * (max_k / 32) * 8};
++    dev_mem xc2{size_t(bench_rows) * max_k}; // the stand-ins' outputs
++    dev_mem xs2{size_t(bench_rows) * (max_k / 32) * 8};
++    dev_mem scale{size_t(bench_rows) * 4}; // the shared down's scale in "all"
+     dev_mem flush{size_t(flush_used)};
+     dev_mem evict{16};
+     dev_mem flush_ef{size_t(flush_used)};       // CR1: the evict-first flush's own buffer
+-    dev_mem xf_p{size_t(max_rows) * max_k * 4}; // CR1: the pre-touch's own activations (copies of xf, xc, xs, scale)
+-    dev_mem xc_p{size_t(max_rows) * max_k};
+-    dev_mem xs_p{size_t(max_rows) * (max_k / 32) * 8};
+-    dev_mem scale_p{size_t(max_rows) * 4};
++    dev_mem xf_p{size_t(bench_rows) * max_k * 4}; // CR1: the pre-touch's own activations (copies of xf, xc, xs, scale)
++    dev_mem xc_p{size_t(bench_rows) * max_k};
++    dev_mem xs_p{size_t(bench_rows) * (max_k / 32) * 8};
++    dev_mem scale_p{size_t(bench_rows) * 4};
+ 
+     const synth * get(fmt f, int32_t k) {
+         const int64_t key = int64_t(f) * 65536 + k;
+@@ -252,7 +253,7 @@ struct bench {
+             }
+             g.bytes.push_back(packed.size());
+             g.w.push_back(std::make_unique<dev_mem>(packed.size() * size_t(g.n_copies)));
+-            g.out.push_back(std::make_unique<dev_mem>(size_t(max_rows) * md.m * 4));
++            g.out.push_back(std::make_unique<dev_mem>(size_t(bench_rows) * md.m * 4));
+             if (!g.w.back()->put(packed.data(), packed.size())) {
+                 return false;
+             }
+@@ -274,11 +275,11 @@ struct bench {
+             glu_m = md.e == epi::glu_gate ? md.m : glu_m;
+         }
+         choose_splits(g.base);
+-        g.gc = std::make_unique<dev_mem>(size_t(max_rows) * std::max(glu_m, 32));
+-        g.gs = std::make_unique<dev_mem>(size_t(max_rows) * (std::max(glu_m, 32) / 32) * 8);
+-        g.ids = std::make_unique<dev_mem>(size_t(max_rows) * route_used * 4);
+-        g.wts = std::make_unique<dev_mem>(size_t(max_rows) * route_used * 4);
+-        g.sg = std::make_unique<dev_mem>(size_t(max_rows) * 4);
++        g.gc = std::make_unique<dev_mem>(size_t(bench_rows) * std::max(glu_m, 32));
++        g.gs = std::make_unique<dev_mem>(size_t(bench_rows) * (std::max(glu_m, 32) / 32) * 8);
++        g.ids = std::make_unique<dev_mem>(size_t(bench_rows) * route_used * 4);
++        g.wts = std::make_unique<dev_mem>(size_t(bench_rows) * route_used * 4);
++        g.sg = std::make_unique<dev_mem>(size_t(bench_rows) * 4);
+         if (glu_m > 0) {
+             g.base.glu_codes = g.gc->as<int8_t>();
+             g.base.glu_scales = g.gs->as<float>();
+@@ -302,7 +303,7 @@ struct bench {
+             g.base.conv.hist = g.hist->as<float>();
+             g.base.conv.cur = g.cur->as<uint32_t>(); // slot 0 throughout (SR1)
+         }
+-        g.work = std::make_unique<dev_mem>(work_bytes(g.base));
++        g.work = std::make_unique<dev_mem>(std::max(work_bytes(g.base), joint_work_bytes(g.base)));
+         g.base.work = g.work->p;
+         g.splits.clear();
+         g.across = glu_m > 0 || d.route;
+@@ -679,6 +680,70 @@ bool run_all(bench & bn, const char * only, const char * set = nullptr) {
+     return found;
+ }
+ 
++// wide: the cost of more verify rows on one weight read. Lone product at B = 1, 4, 5 against the joint launch
++// (FMU2) at U lanes of R rows, U R rows packed, every weight read once; warm and cold, per launch. The joint launch's
++// rows are bitwise the lone launch's at B = R (dense_joint_test), so it stands in for a wide verify's product.
++bool run_wide(bench & bn, const char * only) {
++    struct cfg {
++        int32_t lanes, rows;
++        bool f16;
++    };
++    const std::vector<cfg> cfgs = {{1, 1, false}, {1, 4, false}, {1, 5, false}, {2, 4, false}, {2, 5, false},
++                                   {3, 4, false}, {4, 4, false}, {4, 5, false}, {3, 4, true},  {4, 4, true}};
++    printf("{\"wide\": \"header\", \"cols\": \"group, weight_bytes, lanes, rows, total_rows, f16, warm_us, cold_us\"}\n");
++    for (const group_def & d : all_defs()) {
++        if (d.conv || (only != nullptr && d.name.find(only) == std::string::npos)) {
++            continue;
++        }
++        bool f32 = false;
++        for (const mdef & m : d.mats) {
++            f32 = f32 || m.f == fmt::f32;
++        }
++        if (f32) {
++            continue; // the joint launch rejects F32 weights
++        }
++        group g;
++        if (!bn.make(d, 0, g)) {
++            return false;
++        }
++        for (const cfg & c : cfgs) {
++            joint_args j;
++            j.lanes = c.lanes;
++            j.rows = c.rows;
++            j.dense_f16 = c.f16;
++            const auto unit = [&](int32_t cc) {
++                if (c.lanes == 1) {
++                    return bn.launch(g, c.rows, cc);
++                }
++                const product_args a = g.args(cc, bn.xc.as<int8_t>(), bn.xs.as<float>(), bn.xf.as<float>(),
++                                              bn.grids.p, bn.scale.as<float>());
++                if (!product_joint(a, j, bn.st)) {
++                    fprintf(stderr, "dp-bench wide: %s U %d R %d not enqueued\n", d.name.c_str(), c.lanes, c.rows);
++                    return false;
++                }
++                return true;
++            };
++            if (!unit(0) || !cuda_ok(cudaStreamSynchronize(bn.st), "wide probe")) {
++                cudaGetLastError();
++                printf("{\"wide\": \"%s\", \"lanes\": %d, \"rows\": %d, \"f16\": %s, \"skipped\": true}\n",
++                       d.name.c_str(), c.lanes, c.rows, c.f16 ? "true" : "false");
++                continue;
++            }
++            stats warm, cold;
++            if (!time_warm(bn, n_unit, unit, warm) || !time_cold(bn, unit, cold)) {
++                fprintf(stderr, "dp-bench wide: %s failed\n", d.name.c_str());
++                return false;
++            }
++            printf("{\"wide\": \"%s\", \"weight_bytes\": %zu, \"lanes\": %d, \"rows\": %d, \"total_rows\": %d, "
++                   "\"f16\": %s, \"warm_us\": %.2f, \"cold_us\": %.2f}\n",
++                   d.name.c_str(), g.weight_bytes, c.lanes, c.rows, c.lanes * c.rows, c.f16 ? "true" : "false",
++                   warm.median, cold.median);
++            fflush(stdout);
++        }
++    }
++    return true;
++}
++
+ // Step 7: the layer's order, with C2's quantize or a stand-in between the launches (the stand-ins quantize the
+ // previous launch's F32 output as [B][3072]). Each repeat reads copy rep % 5 of every grouping (5 x the repeat's
+ // weights > 200 MB).
+@@ -1074,9 +1139,10 @@ int fnfl_dp_bench(int device, const char * mode) {
+     const bool one_group = strncmp(mode, "group:", 6) == 0;
+     const bool r4 = strncmp(mode, "r4:", 3) == 0, l2keep = strcmp(mode, "l2keep") == 0; // CR1
+     const bool l2keep_cr3 = strcmp(mode, "l2keep:cr3") == 0;                            // CR3
++    const bool wide = strncmp(mode, "wide", 4) == 0; // wide[:GROUP]: verify rows on one weight read
+     const bool l2keep_xb1 = strcmp(mode, "l2keep:xb1") == 0;                            // XB1
+     if (strcmp(mode, "all") != 0 && strcmp(mode, "seq") != 0 && strcmp(mode, "nsys") != 0 && !ncu && !one_group &&
+-        !r4 && !l2keep && !l2keep_cr3 && !l2keep_xb1) {
++        !r4 && !l2keep && !l2keep_cr3 && !l2keep_xb1 && !wide) {
+         fprintf(stderr, "dp-bench: mode is all, seq, nsys, ncu:POINT, group:NAME, r4:POINT[,POINT], l2keep, "
+                         "l2keep:cr3 or l2keep:xb1\n");
+         return 2;
+@@ -1099,13 +1165,13 @@ int fnfl_dp_bench(int device, const char * mode) {
+         std::vector<uint8_t> g;
+         ok = ok && grid_buffer(g) && bn.grids.put(g.data(), g.size());
+         // the layer input: fixed synthetic F32 rows and their decode format (written once)
+-        std::vector<float> x(size_t(max_rows) * max_k);
++        std::vector<float> x(size_t(bench_rows) * max_k);
+         for (size_t i = 0; i < x.size(); ++i) {
+             x[i] = static_cast<float>(int32_t((i * 2654435761u) >> 20) % 2001 - 1000) * 1e-3f;
+         }
+         const std::vector<float> sc = {0.731058598f, 0.182425521f, 0.5f, 0.952574134f};
+         ok = ok && bn.xf.put(x.data(), x.size() * 4) && bn.scale.put(sc.data(), sc.size() * 4) &&
+-             fn::act::quantize(bn.xf.as<float>(), {bn.xc.as<int8_t>(), bn.xs.as<float>(), max_rows, max_k}, bn.st) &&
++             fn::act::quantize(bn.xf.as<float>(), {bn.xc.as<int8_t>(), bn.xs.as<float>(), bench_rows, max_k}, bn.st) &&
+              cuda_ok(cudaMemcpyAsync(bn.xc2.p, bn.xc.p, bn.xc.n, cudaMemcpyDeviceToDevice, bn.st), "xc2") &&
+              cuda_ok(cudaMemcpyAsync(bn.xs2.p, bn.xs.p, bn.xs.n, cudaMemcpyDeviceToDevice, bn.st), "xs2") &&
+              cuda_ok(cudaMemcpyAsync(bn.xf_p.p, bn.xf.p, bn.xf.n, cudaMemcpyDeviceToDevice, bn.st), "xf_p") &&
+@@ -1134,6 +1200,8 @@ int fnfl_dp_bench(int device, const char * mode) {
+         if (ok) {
+             if (r4) {
+                 ok = run_r4(bn, mode + 3);
++            } else if (wide) {
++                ok = run_wide(bn, mode[4] == ':' ? mode + 5 : nullptr);
+             } else if (l2keep_cr3) {
+                 ok = run_l2keep_cr3(bn, {1ll << 19, 3ll << 18, 1ll << 20}, "CR3");
+             } else if (l2keep_xb1) { // XB1's probe 5: the experts' own code size, a 0.1 MB keep set

@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 
 static_assert(sizeof(fnfl_step_result::tokens) / sizeof(int32_t) == fn::runtime::max_step_tokens,
@@ -387,6 +388,12 @@ fnfl_engine * fnfl_load(const fnfl_load_params & params, fnfl_model_meta & meta,
     }
     fprintf(stderr, "FNFL: %s", sv_text.c_str());
     c.eager = sv.executor == "eager"; // ME3: --fnfl-expert-executor (the graphs unless eager)
+    // FNFL_JOINT_ROUTER_TC=0 (test switch): the joint rounds' router as the lone launch (bitwise), so every joint lane's
+    // tokens are its lone run's and outputs do not depend on which rounds ran jointly
+    if (const char * e = std::getenv("FNFL_JOINT_ROUTER_TC"); e != nullptr && e[0] == '0') {
+        c.joint_router_tc = false;
+        fprintf(stderr, "FNFL: joint router on the lone (bitwise) launch (FNFL_JOINT_ROUTER_TC=0)\n");
+    }
     c.short_read = cached ? sv.short_read : 0;
     c.prompt_chunk = sv.prompt_chunk;
     if (cached) { // ME1: one device or cached TP, the routed experts from the expert cache
