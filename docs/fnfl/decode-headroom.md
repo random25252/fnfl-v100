@@ -289,6 +289,24 @@ head proposes as before. Code: `lookup_propose` and `step_propose` in `fn/runtim
 - **Telemetry** (all lookup runs): GPU 0 up to 67 °C core and 68 °C HBM, `0x4` only during long prefills; GPU 1 up to
   59 °C; no thermal throttling.
 
+## Follow-ups that didn't pay (2026-11-24)
+
+Measured with the HC timeline build and three greedy decode requests; every change was bitwise the same and none
+moved the step time, so none was kept:
+
+| Change | What it showed |
+|---|---|
+| L2 prefetch of the up weights while the moments are awaited | the up products stay at ~4.1 µs: instruction-bound on their 40 SMs, not DRAM-bound |
+| First down weight rows issued only after the activations land | the activations still take ~2.8 µs to arrive (cold reads and the launch), and the products end later |
+| X-HMIX landing folded into the HC launch's idle blocks (no `land_hmix` launch) | the HC launch just ends later: `land_hmix` was waiting for the other card, not costing its own time |
+| Verify at 5 rows against 4 (fixed depth 4 vs 3) | not a 5-row anomaly: 3 rows are slow (IQ2 gate/up at B = 3 takes ~65 µs, ~43 at 4); from 4 to 5 the experts grow with the distinct experts (~+8 µs a gate/up call), HC and the products steadily; only expert down shows a small extra (~0.1 ms a step). Depth 3 stays best |
+
+**What this says.** The small exchange kernels' times in a trace (~1.9 ms a step) are mostly waiting for the other
+card, so folding them saves little. What is left in a step is a chain of cross-card hand-offs (about four a layer)
+and cold starts of many small launches. Removing that needs fewer synchronization points by design (phase 4 of the
+path), not per-kernel tuning. Remaining kernel items (the up products on all 72 SMs, a leaner low-rank finish) are
+worth ~1% each.
+
 ## Ideas for later, ranked by expected payoff
 
 These rank the exchange and kernel work. For code-editing work, **n-gram drafting** (from sFNX, in the next section)

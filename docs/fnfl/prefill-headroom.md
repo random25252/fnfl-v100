@@ -417,6 +417,25 @@ conversations of 32K, or 6–8 of 131K. NVMe could be a second tier (ReVolta: a 
   `FNFL prefill: from token … (N kept by the shell …)` lines show what was reused.
 - Measure the actual KV and state bytes a conversation holds in this build.
 
+### Measured (2026-11-24): what the slot already keeps, and message-boundary checkpoints
+
+- **Switching conversations is the expensive case.** With `-np 1`, a 1,500-token side request between two turns of a
+  30K conversation makes the next turn re-read everything: 7.7 s instead of ~0.2 s. Two slots (`-np 2`) don't fit with
+  Swift (out of memory at 147K, 114K and 98K cells), so they are no workaround here. Host parking (way 2 above) is the
+  fix; the engine already has `target::save_ready` and `restore_ready` (all non-per-cell state to host and back), so
+  what is missing is the per-cell data (KV, index keys and summaries, the draft's KV and index) and the checkpoint book.
+- **Message-boundary checkpoints (way 1) don't pay.** Built and measured on a 34,882-token chat of 22 messages: an
+  edit inside the last message re-read 1,736 tokens instead of 2,120 (0.67 s against 0.80 s), but the extra chunk ends
+  cost every fresh read ~0.9 s (11.3 s against 10.4 s). The prompt-end checkpoints and those at multiples of 8,192
+  already bound a divergence to about one turn. Not kept. Cuts that weren't on a 64-row GDN block made reads ~1.6–1.9×
+  slower: any future change that ends chunks elsewhere must keep them 64-aligned.
+- **Decision (2026-11-24): host parking is skipped for now.** It only pays when a client interleaves requests (side
+  requests for titles, summaries or subagents between turns, or switching chats), and there is no record yet of how
+  often that happens in real use. One conversation at a time already reads only each turn's new tokens. To revisit:
+  keep the server log through a normal day of use and count the `FNFL prefill: from token 0 at 0` lines that follow a
+  long conversation (a full re-read after a switch). Frequent ones make parking worth its 1–2 weeks; the pieces it
+  needs are listed in the first bullet above.
+
 ## The realistic maximum with code changes, and the path (2026-11-24, estimates)
 
 Per 8,192-token chunk (today ~2.08 s, ~3,930 tok/s with all the switches):
@@ -457,7 +476,7 @@ and 5,000+ would need the first three items.
 | 2 | **Split HC across the cards** instead of replicating it, its moments exchanged by the copy engines | another ~+5–10% | 1–2 weeks; sums in another order, so the numerical contract, not bitwise |
 | 3 | **A CUTLASS-class k loop for the dense products** (measured: cuBLAS 1.5× FNFL on the big shapes; the L2 part done, `--fnfl-dense-grouped on`, +1%). The experts already beat cuBLAS; grouping them over the whole chunk (rows an expert ×2) is a separate idea | +3–5% at most, capped by GPU 0's power (section above) | weeks, or cuBLAS/CUTLASS as a dependency (not bitwise) |
 | 4 | **QSA card balance** (the indexer's card alternates; the other waits 3–8 ms a QSA layer) | +2–4% | days |
-| 5 | **Prefix caching beyond the slot** (sizing in its own section above; [ReVolta](https://github.com/Leonccaa/ReVolta), [QEngine](https://github.com/bpx03/QEngine), [sFNX](https://github.com/johnfink8/sfnx)'s message-boundary checkpoints, then host parking) | repeated or switched-back context: seconds → well under a second; nothing for fresh prompts | medium–large; ~20–25 GB of host RAM is free beside the locked PLE table |
+| 5 | **Prefix caching beyond the slot** (*skipped for now, 2026-11-24: [measured below the sizing](#measured-2026-11-24-what-the-slot-already-keeps-and-message-boundary-checkpoints)*) (sizing in its own section above; [ReVolta](https://github.com/Leonccaa/ReVolta), [QEngine](https://github.com/bpx03/QEngine), [sFNX](https://github.com/johnfink8/sfnx)'s message-boundary checkpoints, then host parking) | repeated or switched-back context: seconds → well under a second; nothing for fresh prompts | medium–large; ~20–25 GB of host RAM is free beside the locked PLE table |
 | 6 | **Tiny prompts' fixed costs** (FP16 weight conversions every chunk, ~18 ms; both halves re-reading the experts) | 20–30 ms of a ~0.1 s TTFT | small–medium |
 
 **To eliminate soon: why GPU 0 draws ~30 W more than GPU 1.** Run the same fixed GEMM load on each card cold (~35 °C),
