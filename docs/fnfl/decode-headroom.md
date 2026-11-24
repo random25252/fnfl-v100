@@ -367,6 +367,21 @@ the cross-card waits: no single lever of more than a few percent was found.
 (~+3–5%), each weeks of work; wider verify windows with lookup or suffix drafts (+20–40% on edits only). Together
 perhaps +10–20% on general text, not a step change.
 
+**Confidence-gated drafting measured offline: no gain on general text (2026-11-24).** An experiment build logged, for
+3,105 steps at 4 proposals and T 0.7, the draft head's q of each proposal and the accepted count; policies were replayed
+against the measured step costs by proposal count (1: ~12.6 ms est., 2: 13.35, 3: 14.2, 4: 16.1 at short context),
+using that a step of k proposals accepts min(a, k):
+
+| Workload | Fixed 3 (today) | Fixed 4 | Best gate (stop below a confidence) | Oracle (perfect per-step depth) |
+|---|---|---|---|---|
+| General (`bench.py` prompts, 13 requests) | 196 tok/s | −2.3% | −0.1 to −0.5% | +12.8% |
+| Edits (`edit_bench.py`, 4 requests) | 275 | +8.9% | +9.0–9.2% (≈ fixed 4) | +10.4% |
+| Prose (1 request) | 209 | −0.4% | −0.6 to −2.4% | +12.7% |
+
+The draft head's confidence does not predict rejections well enough to beat a fixed depth on general text, and on
+edits lookup drafts (4 proposals) already take that gain. The oracle's +12.8% is what a much better stopping signal
+could reach; none is known. Not built.
+
 **DFlash2 (block-diffusion drafter) is a poor fit here.** It drafts an 8-token block in one pass of a 5-layer model fed
 the target's states at layers 5, 15, 25, 35 and 45; on 2× A100 it lifts accepted tokens a step from 2.98 (MTP-3) to
 4.08 and decode 180 → 225 tok/s ([vllm-backport #128](https://github.com/wtdcode/vllm-backport/pull/128)). Its
